@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Library</OutputType>
+        <RootNamespace>AccuracyIndicator</RootNamespace>
+        <AssemblyName>ManiaTest</AssemblyName>
+        <TargetFramework>net6.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>disable</Nullable>
+        <ReferencePath>D:\APP Profile\steam\steamapps\common\Muse Dash</ReferencePath>
+        <OutputPath>..\debug</OutputPath>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Reference Include="0Harmony"><HintPath>$(ReferencePath)\MelonLoader\net6\0Harmony.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Assembly-CSharp"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\Assembly-CSharp-firstpass.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Il2CppInterop.Runtime"><HintPath>$(ReferencePath)\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Il2Cppmscorlib"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="MelonLoader"><HintPath>$(ReferencePath)\MelonLoader\net6\MelonLoader.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.CoreModule"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.UI"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.UI.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.UIModule"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.UIModule.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.TextRenderingModule.dll</HintPath><Private>False</Private></Reference>
+    </ItemGroup>
+</Project>

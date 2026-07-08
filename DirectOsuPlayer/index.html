@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ManiaInMuse osu player</title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      font-family: Arial, sans-serif;
+    }
+
+    #stage {
+      position: relative;
+      height: 100vh;
+      width: 50vh;
+      background: #000;
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #000;
+    }
+
+    #controls {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      display: flex;
+      gap: 8px;
+      opacity: 0.2;
+      transition: opacity 120ms linear;
+    }
+
+    #controls:hover {
+      opacity: 1;
+    }
+
+    button {
+      width: 36px;
+      height: 36px;
+      border: 1px solid #444;
+      color: #ddd;
+      background: #050505;
+      font-size: 16px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+  </div>
+  <div id="controls">
+    <button id="toggle" title="play/pause">⏸</button>
+    <button id="restart" title="restart">↺</button>
+  </div>
+
+  <script>
+    const FALL_TIME_MS = 348;
+    const KEY_COUNT = 6;
+    const NOTE_HEIGHT = 28;
+    const HEAD_COLOR = "#00dc46";
+    const BODY_COLOR = "#6e6e6e";
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const toggle = document.getElementById("toggle");
+    const restart = document.getElementById("restart");
+
+    let objects = [];
+    let playing = true;
+    let startPerf = performance.now();
+    let pausePerf = 0;
+    let pausedMs = 0;
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(rect.width * dpr);
+      canvas.height = Math.round(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function laneFromX(x) {
+      return Math.max(1, Math.min(KEY_COUNT, Math.floor(x * KEY_COUNT / 512) + 1));
+    }
+
+    function parseOsu(text) {
+      const result = [];
+      let inHitObjects = false;
+
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("//")) continue;
+
+        if (line.startsWith("[") && line.endsWith("]")) {
+          inHitObjects = line.toLowerCase() === "[hitobjects]";
+          continue;
+        }
+
+        if (!inHitObjects) continue;
+
+        const parts = line.split(",");
+        if (parts.length < 5) continue;
+
+        const x = Number(parts[0]);
+        const start = Number(parts[2]);
+        const type = Number(parts[3]);
+        if (!Number.isFinite(x) || !Number.isFinite(start) || !Number.isFinite(type)) continue;
+
+        const isHold = (type & 128) !== 0;
+        let end = start;
+        if (isHold && parts[5]) {
+          const parsedEnd = Number(parts[5].split(":")[0]);
+          if (Number.isFinite(parsedEnd)) end = Math.max(start, parsedEnd);
+        }
+
+        result.push({ lane: laneFromX(x), start, end, isHold });
+      }
+
+      result.sort((a, b) => a.start - b.start || a.lane - b.lane);
+      return result;
+    }
+
+    async function load() {
+      const response = await fetch("latest.osu", { cache: "no-store" });
+      if (!response.ok) throw new Error(`latest.osu ${response.status}`);
+      objects = parseOsu(await response.text());
+      restartPlayback();
+    }
+
+    function songTimeMs(now) {
+      if (!playing) return pausePerf - startPerf - pausedMs;
+      return now - startPerf - pausedMs;
+    }
+
+    function yFor(time, current, height) {
+      const progress = 1 - (time - current) / FALL_TIME_MS;
+      return progress * height;
+    }
+
+    function draw(now) {
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      const laneWidth = width / KEY_COUNT;
+      const noteWidth = laneWidth * 0.86;
+      const current = songTimeMs(now);
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, width, height);
+
+      for (const obj of objects) {
+        if (obj.end < current - 100) continue;
+        if (obj.start > current + FALL_TIME_MS) break;
+
+        const x = laneWidth * (obj.lane - 0.5) - noteWidth / 2;
+        const headY = yFor(obj.start, current, height);
+        const tailY = obj.isHold ? yFor(obj.end, current, height) : headY;
+
+        if (obj.isHold) {
+          const top = Math.max(0, Math.min(headY, tailY));
+          const bottom = Math.min(height, Math.max(headY, tailY));
+          const bodyHeight = bottom - top;
+          if (bodyHeight > 1) {
+            ctx.fillStyle = BODY_COLOR;
+            ctx.fillRect(x, top, noteWidth, bodyHeight);
+          }
+        }
+
+        if (headY >= -NOTE_HEIGHT && headY <= height + NOTE_HEIGHT) {
+          ctx.fillStyle = HEAD_COLOR;
+          ctx.fillRect(x, headY - NOTE_HEIGHT / 2, noteWidth, NOTE_HEIGHT);
+        }
+      }
+
+      requestAnimationFrame(draw);
+    }
+
+    function restartPlayback() {
+      startPerf = performance.now();
+      pausedMs = 0;
+      pausePerf = 0;
+      playing = true;
+      toggle.textContent = "⏸";
+    }
+
+    toggle.addEventListener("click", () => {
+      const now = performance.now();
+      if (playing) {
+        playing = false;
+        pausePerf = now;
+        toggle.textContent = "▶";
+      } else {
+        playing = true;
+        pausedMs += now - pausePerf;
+        toggle.textContent = "⏸";
+      }
+    });
+
+    restart.addEventListener("click", restartPlayback);
+    window.addEventListener("resize", resize);
+    resize();
+    load().catch(error => console.error(error));
+    requestAnimationFrame(draw);
+  </script>
+</body>
+</html>

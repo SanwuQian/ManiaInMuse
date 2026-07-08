@@ -1,0 +1,13 @@
+debug/
+bin/
+obj/
+*.pdb
+*.zip
+*.rar
+*.dll
+.vs/
+.idea/
+# Log files
+*.log
+DirectOsuPlayer/server.err.log
+DirectOsuPlayer/server.out.log
