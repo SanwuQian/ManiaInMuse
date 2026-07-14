@@ -7,7 +7,7 @@ internal static class MapLoader
 {
     private const string ExportDirectory = "UserData\\ManiaInMuse\\maps";
 
-    internal static void SaveCurrentMap(IReadOnlyList<NoteInfo> notes, float bpm, float runtimeBpm)
+    internal static void SaveCurrentMap(IReadOnlyList<NoteInfo> notes, float bpm, float runtimeBpm, PlayerConfig config)
     {
         if (notes.Count == 0)
             return;
@@ -22,7 +22,46 @@ internal static class MapLoader
         File.WriteAllText(path, csv, Encoding.UTF8);
         File.WriteAllText(latestPath, csv, Encoding.UTF8);
 
-        MelonLogger.Msg($"[ManiaTest] Map exported: {path}");
+        MelonLogger.Msg($"[ManiaInMuse] Map exported: {path}");
+
+        if (config != null && config.AutoCleanCache)
+            CleanExportCache(config.CacheMaxMapFiles);
+    }
+
+    private static void CleanExportCache(int maxMapFiles)
+    {
+        try
+        {
+            if (maxMapFiles < 0 || !Directory.Exists(ExportDirectory))
+                return;
+
+            var files = Directory.GetFiles(ExportDirectory, "*_notes.csv", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .Where(file => file.Exists)
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .ToList();
+
+            int removed = 0;
+            foreach (var file in files.Skip(maxMapFiles))
+            {
+                try
+                {
+                    file.Delete();
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[ManiaInMuse] Failed to delete cache file {file.FullName}: {ex.Message}");
+                }
+            }
+
+            if (removed > 0)
+                MelonLogger.Msg($"[ManiaInMuse] Cache cleanup removed {removed} old map export(s)");
+        }
+        catch (Exception ex)
+        {
+            MelonLogger.Warning($"[ManiaInMuse] Cache cleanup failed: {ex.Message}");
+        }
     }
 
     private static string BuildCsv(IReadOnlyList<NoteInfo> notes, float bpm, float runtimeBpm)

@@ -7,7 +7,6 @@ namespace AccuracyIndicator;
 [RegisterTypeInIl2Cpp]
 public class OsuPlayerHUD : MonoBehaviour
 {
-    private const int KeyCount = 6;
     private const int MaxVisibleNotes = 256;
     private const int PlayerSortingOrder = 900;
     private const float JudgementLineHeight = 4f;
@@ -55,13 +54,15 @@ public class OsuPlayerHUD : MonoBehaviour
         background.color = _config.BackgroundColor;
         background.raycastTarget = false;
 
+        playfieldGo.AddComponent<RectMask2D>();
+
         var lineGo = new GameObject("JudgementLine");
         lineGo.transform.SetParent(_playfield, false);
         var lineRect = lineGo.AddComponent<RectTransform>();
         lineRect.anchorMin = new Vector2(0.5f, 0.5f);
         lineRect.anchorMax = new Vector2(0.5f, 0.5f);
         lineRect.pivot = new Vector2(0.5f, 0.5f);
-        lineRect.anchoredPosition = new Vector2(0, -_config.TrackHeight * 0.5f + JudgementLineHeight * 0.5f);
+        lineRect.anchoredPosition = new Vector2(0, JudgementLineY(_config));
         lineRect.sizeDelta = new Vector2(_config.TrackWidth, JudgementLineHeight);
         var line = lineGo.AddComponent<Image>();
         line.color = Color.white;
@@ -80,7 +81,7 @@ public class OsuPlayerHUD : MonoBehaviour
 
         _objects.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
         HideAll();
-        MelonLogger.Msg($"[ManiaTest] osu player refreshed {_objects.Count} objects");
+        MelonLogger.Msg($"[ManiaInMuse] osu player refreshed {_objects.Count} objects");
     }
 
     private void LoadLatestOsu()
@@ -92,21 +93,21 @@ public class OsuPlayerHUD : MonoBehaviour
             if (!_loggedMissingFile)
             {
                 _loggedMissingFile = true;
-                MelonLogger.Warning($"[ManiaTest] osu player could not find {path}");
+                MelonLogger.Warning($"[ManiaInMuse] osu player could not find {path}");
             }
             return;
         }
 
         try
         {
-            foreach (var obj in OsuPlayObjectReader.Read(path))
+            foreach (var obj in OsuPlayObjectReader.Read(path, _config))
                 _objects.Add(obj);
 
-            MelonLogger.Msg($"[ManiaTest] osu player loaded {_objects.Count} objects from {path}");
+            MelonLogger.Msg($"[ManiaInMuse] osu player loaded {_objects.Count} objects from {path}");
         }
         catch (Exception ex)
         {
-            MelonLogger.Error($"[ManiaTest] osu player failed to load {path}: {ex}");
+            MelonLogger.Error($"[ManiaInMuse] osu player failed to load {path}: {ex}");
         }
     }
 
@@ -122,14 +123,24 @@ public class OsuPlayerHUD : MonoBehaviour
         }
 
         Main.UpdatePlaybackState();
+        if (!Main.ShouldShowPlayerHud())
+        {
+            SetPlayfieldVisible(false);
+            HideAll();
+            return;
+        }
+
+        SetPlayfieldVisible(true);
         Render(Main.SongTime);
     }
 
     private void Render(float songTime)
     {
         int visualIndex = 0;
-        float topY = _config.TrackHeight * 0.5f + _config.NoteHeight;
-        float bottomY = -_config.TrackHeight * 0.5f + _config.NoteHeight * 0.5f;
+        float trackTopY = _config.TrackHeight * 0.5f;
+        float trackBottomY = -_config.TrackHeight * 0.5f;
+        float spawnY = trackTopY + _config.NoteHeight * 0.5f;
+        float judgementY = JudgementLineY(_config) + _config.NoteHeight * 0.5f;
 
         for (int i = 0; i < _objects.Count && visualIndex < _visuals.Count; i++)
         {
@@ -139,15 +150,15 @@ public class OsuPlayerHUD : MonoBehaviour
             if (obj.StartSec > songTime + _config.FallTimeSec)
                 break;
 
-            float headY = YForTime(obj.StartSec, songTime, topY, bottomY, _config.FallTimeSec);
-            float tailY = obj.IsHold ? YForTime(obj.EndSec, songTime, topY, bottomY, _config.FallTimeSec) : headY;
+            float headY = YForTime(obj.StartSec, songTime, spawnY, judgementY, _config.FallTimeSec);
+            float tailY = obj.IsHold ? YForTime(obj.EndSec, songTime, spawnY, judgementY, _config.FallTimeSec) : headY;
 
-            bool headVisible = headY >= bottomY - _config.NoteHeight && headY <= topY + _config.NoteHeight;
-            bool bodyVisible = obj.IsHold && Math.Max(headY, tailY) >= bottomY && Math.Min(headY, tailY) <= topY;
+            bool headVisible = headY >= trackBottomY - _config.NoteHeight && headY <= trackTopY + _config.NoteHeight;
+            bool bodyVisible = obj.IsHold && Math.Max(headY, tailY) >= trackBottomY && Math.Min(headY, tailY) <= trackTopY;
             if (!headVisible && !bodyVisible)
                 continue;
 
-            _visuals[visualIndex++].Show(obj, headY, tailY, bottomY, topY, _config.TrackWidth, _config.NoteWidth, _config.NoteHeight);
+            _visuals[visualIndex++].Show(obj, headY, tailY, trackBottomY, trackTopY, _config, _config.NoteWidth, _config.NoteHeight);
         }
 
         for (int i = visualIndex; i < _visuals.Count; i++)
@@ -161,10 +172,21 @@ public class OsuPlayerHUD : MonoBehaviour
         return Mathf.Lerp(topY, bottomY, progress);
     }
 
+    private static float JudgementLineY(PlayerConfig config)
+    {
+        return config.TrackHeight * (0.5f - config.JudgementLinePosition);
+    }
+
     private void HideAll()
     {
         foreach (var visual in _visuals)
             visual.Hide();
+    }
+
+    private void SetPlayfieldVisible(bool visible)
+    {
+        if (_playfield != null && _playfield.gameObject.activeSelf != visible)
+            _playfield.gameObject.SetActive(visible);
     }
 
     private void OnDestroy()
@@ -205,10 +227,9 @@ public class OsuPlayerHUD : MonoBehaviour
             Hide();
         }
 
-        internal void Show(OsuPlayObject obj, float headY, float tailY, float bottomY, float topY, float playfieldWidth, float noteWidth, float noteHeight)
+        internal void Show(OsuPlayObject obj, float headY, float tailY, float bottomY, float topY, PlayerConfig config, float noteWidth, float noteHeight)
         {
-            float laneWidth = playfieldWidth / KeyCount;
-            float x = -playfieldWidth * 0.5f + laneWidth * (obj.Lane - 0.5f);
+            float x = config.LaneToPlayfieldX(obj.Lane, config.TrackWidth);
 
             if (obj.IsHold)
             {
@@ -254,21 +275,39 @@ internal readonly struct OsuPlayObject
     internal readonly float StartSec;
     internal readonly float EndSec;
     internal readonly bool IsHold;
+    internal readonly OsuPlayObjectKind Kind;
 
-    internal OsuPlayObject(int lane, float startSec, float endSec, bool isHold)
+    internal OsuPlayObject(int lane, float startSec, float endSec, bool isHold, OsuPlayObjectKind kind = OsuPlayObjectKind.RegularTap)
     {
         Lane = lane;
         StartSec = startSec;
         EndSec = endSec;
         IsHold = isHold;
+        Kind = kind;
     }
+
+    internal bool IsLocalSwapCandidate => !IsHold && (Kind is OsuPlayObjectKind.RegularTap or OsuPlayObjectKind.BossTap);
+    internal bool AllowsAnyPosture => Kind == OsuPlayObjectKind.BossTap;
+
+    internal OsuPlayObject WithLane(int lane)
+    {
+        return new OsuPlayObject(lane, StartSec, EndSec, IsHold, Kind);
+    }
+}
+
+internal enum OsuPlayObjectKind
+{
+    RegularTap,
+    BossTap,
+    Hold,
+    Multi,
+    UtilityTap,
+    Imported
 }
 
 internal static class OsuPlayObjectReader
 {
-    private const int KeyCount = 6;
-
-    internal static IEnumerable<OsuPlayObject> Read(string path)
+    internal static IEnumerable<OsuPlayObject> Read(string path, PlayerConfig config)
     {
         bool inHitObjects = false;
         var objects = new List<OsuPlayObject>();
@@ -291,7 +330,7 @@ internal static class OsuPlayObjectReader
                 if (!inHitObjects)
                     continue;
 
-                var obj = ParseHitObject(line);
+                var obj = ParseHitObject(line, config);
                 if (obj.HasValue)
                     objects.Add(obj.Value);
             }
@@ -301,7 +340,7 @@ internal static class OsuPlayObjectReader
         return objects;
     }
 
-    private static OsuPlayObject? ParseHitObject(string line)
+    private static OsuPlayObject? ParseHitObject(string line, PlayerConfig config)
     {
         string[] parts = line.Split(',');
         if (parts.Length < 5)
@@ -314,7 +353,7 @@ internal static class OsuPlayObjectReader
         if (!int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int type))
             return null;
 
-        int lane = Math.Clamp((int)Math.Floor(x * KeyCount / 512.0) + 1, 1, KeyCount);
+        int lane = config.XToLane(x);
         bool isHold = (type & 128) != 0;
         int endMs = startMs;
         if (isHold && parts.Length >= 6)
@@ -324,6 +363,6 @@ internal static class OsuPlayObjectReader
                 endMs = startMs;
         }
 
-        return new OsuPlayObject(lane, startMs / 1000f, Math.Max(startMs, endMs) / 1000f, isHold);
+        return new OsuPlayObject(lane, startMs / 1000f, Math.Max(startMs, endMs) / 1000f, isHold, OsuPlayObjectKind.Imported);
     }
 }

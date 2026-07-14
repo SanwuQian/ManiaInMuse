@@ -40,14 +40,14 @@ internal class Main : MelonMod
             var sb = StageBattleComponent.instance;
             if (sb == null)
             {
-                MelonLogger.Warning("[ManiaTest] GameStart ignored: StageBattleComponent.instance is null");
+                MelonLogger.Warning("[ManiaInMuse] GameStart ignored: StageBattleComponent.instance is null");
                 return;
             }
 
             var arr = sb.GetMusicData();
             if (arr == null)
             {
-                MelonLogger.Warning("[ManiaTest] GameStart ignored: GetMusicData returned null");
+                MelonLogger.Warning("[ManiaInMuse] GameStart ignored: GetMusicData returned null");
                 return;
             }
 
@@ -84,28 +84,29 @@ internal class Main : MelonMod
 
             if (!Active)
             {
-                MelonLogger.Warning("[ManiaTest] GameStart ignored: no playable notes were read");
+                MelonLogger.Warning("[ManiaInMuse] GameStart ignored: no playable notes were read");
                 RefreshHud();
                 return;
             }
 
+            var playerConfig = PlayerConfig.LoadOrCreate();
             try
             {
-                MapLoader.SaveCurrentMap(Notes, CurrentBpm, CurrentRuntimeBpm);
+                MapLoader.SaveCurrentMap(Notes, CurrentBpm, CurrentRuntimeBpm, playerConfig);
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"[ManiaTest] Failed to export map: {ex}");
+                MelonLogger.Error($"[ManiaInMuse] Failed to export map: {ex}");
             }
 
-            IReadOnlyList<OsuPlayObject> playObjects = RuntimeOsuMapBuilder.Build(Notes, CurrentBpm);
+            IReadOnlyList<OsuPlayObject> playObjects = RuntimeOsuMapBuilder.Build(Notes, CurrentBpm, playerConfig);
             try
             {
-                RuntimeOsuWriter.SaveLatest(playObjects, CurrentBpm);
+                RuntimeOsuWriter.SaveLatest(playObjects, CurrentBpm, playerConfig);
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"[ManiaTest] Failed to export osu map: {ex}");
+                MelonLogger.Error($"[ManiaInMuse] Failed to export osu map: {ex}");
             }
 
             EnsurePlayerHud();
@@ -116,10 +117,10 @@ internal class Main : MelonMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Error($"[ManiaTest] Failed to load player map: {ex}");
+                MelonLogger.Error($"[ManiaInMuse] Failed to load player map: {ex}");
             }
 
-            MelonLogger.Msg($"[ManiaTest] Loaded {Notes.Count} notes, first={Notes[0].TimeSec:F2}s last={Notes[^1].TimeSec:F2}s bpm={CurrentBpm:F3} runtimeBpm={CurrentRuntimeBpm:F3}");
+            MelonLogger.Msg($"[ManiaInMuse] Loaded {Notes.Count} notes, first={Notes[0].TimeSec:F2}s last={Notes[^1].TimeSec:F2}s bpm={CurrentBpm:F3} runtimeBpm={CurrentRuntimeBpm:F3}");
         }
     }
 
@@ -151,13 +152,13 @@ internal class Main : MelonMod
 
         try
         {
-            var go = new GameObject("ManiaTestCounterHUD");
+            var go = new GameObject("ManiaInMuseCounterHUD");
             HUD = go.AddComponent<CounterHUD>();
         }
         catch (Exception ex)
         {
             HUD = null;
-            MelonLogger.Error($"[ManiaTest] Failed to create HUD: {ex}");
+            MelonLogger.Error($"[ManiaInMuse] Failed to create HUD: {ex}");
         }
     }
 
@@ -186,7 +187,7 @@ internal class Main : MelonMod
         catch (Exception ex)
         {
             PlayerHUD = null;
-            MelonLogger.Error($"[ManiaTest] Failed to create osu player HUD: {ex}");
+            MelonLogger.Error($"[ManiaInMuse] Failed to create osu player HUD: {ex}");
         }
     }
 
@@ -250,7 +251,7 @@ internal class Main : MelonMod
     {
         if (logEnd && (Active || Notes.Count > 0))
         {
-            MelonLogger.Msg($"[ManiaTest] End: G{CntGround} A{CntAir} Hold{CntLong} Block{CntBlock} Mul{CntMul} Boss{CntBoss} Gh{CntGhost} En{CntEnergy} Ms{CntMusic} U{CntUnknown} / {Notes.Count} t={SongTime:F1}s ({reason})");
+            MelonLogger.Msg($"[ManiaInMuse] End: G{CntGround} A{CntAir} Hold{CntLong} Block{CntBlock} Mul{CntMul} Boss{CntBoss} Gh{CntGhost} En{CntEnergy} Ms{CntMusic} U{CntUnknown} / {Notes.Count} t={SongTime:F1}s ({reason})");
         }
 
         Active = false;
@@ -346,6 +347,18 @@ internal class Main : MelonMod
         }
     }
 
+    internal static bool ShouldShowPlayerHud()
+    {
+        if (!Active)
+            return false;
+
+        var sb = StageBattleComponent.instance;
+        if (sb == null || !sb.isInGame)
+            return false;
+
+        return Notes.Count == 0 || SongTime <= Notes[^1].TimeSec + 0.5f;
+    }
+
     internal static void ZeroCounters()
     {
         CntMonster = 0;
@@ -425,7 +438,7 @@ internal class Main : MelonMod
         }
         catch (Exception ex)
         {
-            MelonLogger.Warning($"[ManiaTest] Failed to read BPM: {ex.Message}");
+            MelonLogger.Warning($"[ManiaInMuse] Failed to read BPM: {ex.Message}");
         }
     }
 
@@ -500,7 +513,7 @@ internal class Main : MelonMod
     {
         if (sceneName == "GameMain" && Active)
         {
-            MelonLogger.Msg("[ManiaTest] Reset stale run on GameMain load");
+            MelonLogger.Msg("[ManiaInMuse] Reset stale run on GameMain load");
             ResetRun("stale GameMain load", true);
         }
     }
