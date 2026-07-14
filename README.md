@@ -1,32 +1,33 @@
 # ManiaInMuse
 
-ManiaInMuse is a Muse Dash MelonLoader mod that reads the current chart at song start, exports the note data, converts it to an osu!mania-style map, and renders a falling-note overlay in game.
+ManiaInMuse 是一个用于 Muse Dash 的 MelonLoader Mod。它会在进入歌曲时读取当前谱面的全部键时刻信息，导出原始 CSV，转换为 osu!mania 风格谱面，并在游戏内显示下落式谱面覆盖层。
 
-The mod does not send input to the game. It is a chart reader, converter, and visual player.
+这个 Mod 不会自动按键，也不会向游戏发送输入。它的定位是谱面读取、谱面转换和游戏内可视化播放器。
 
-## Features
+## 功能
 
-- Reads Muse Dash chart data from the active `StageBattleComponent` when a song starts.
-- Exports raw chart data as CSV, including timing, note type, air/ground flag, BPM, hold length, and multi-hit fields.
-- Generates `latest.osu` for the current song.
-- Shows a black-background falling-note overlay in game.
-- Supports configurable key counts from 2K to 7K.
-- Supports per-key air/ground lane layouts through `Player.cfg`.
-- Handles `monster`, `ghost`, `hold`, `boss`, `multi`, `music`, `block`, and unknown note types.
-- Uses BPM-aware multi-note patterns and local lane optimization to reduce awkward short gaps.
-- Hides the player when paused, failed, cleared, or after leaving the song.
+- 进入歌曲时从 `StageBattleComponent` 读取当前 Muse Dash 谱面数据。
+- 导出原始谱面 CSV，包含时间、类型、空中/地面、BPM、长按长度、multi 连击参数等字段。
+- 为当前歌曲生成 `latest.osu`。
+- 在游戏内显示黑色背景的下落式谱面覆盖层。
+- 支持 2K 到 7K 的自定义键数。
+- 支持通过 `Player.cfg` 配置每个轨道对应空中或地面。
+- 支持 `monster`、`ghost`、`hold`、`boss`、`multi`、`music`、`block` 等类型。
+- 对 multi 使用基于 BPM 的左右对拍生成规则。
+- 使用局部轨道交换和短间隔修复，尽量减少不顺手的密集同轨间隔。
+- 暂停、结算、失败、退出歌曲后会隐藏播放器界面。
 
-## Requirements
+## 运行环境
 
-- Muse Dash, Il2Cpp build.
-- MelonLoader net6 runtime. The current development target is MelonLoader `0.6.6 Open-Beta`.
-- .NET 6 SDK for building from source.
+- Muse Dash，Il2Cpp 版本。
+- MelonLoader net6 运行环境。当前开发和测试使用的是 MelonLoader `0.6.6 Open-Beta`。
+- 如果需要从源码编译，需要安装 .NET 6 SDK。
 
-The mod has no hard reference to MuseDashMirror or CustomAlbums. If you play custom albums, those still need their own required mods.
+ManiaInMuse 本身不强依赖 MuseDashMirror 或 CustomAlbums。如果你要游玩自定义专辑，CustomAlbums 等 Mod 仍然需要按它们自己的要求安装。
 
-## Install
+## 安装
 
-Copy the built mod into the Muse Dash folder:
+把编译得到的 DLL 和配置文件放到 Muse Dash 目录：
 
 ```text
 Muse Dash/
@@ -37,27 +38,27 @@ Muse Dash/
       Player.cfg
 ```
 
-On first run, `Player.cfg` is created automatically if it does not exist.
+如果 `Player.cfg` 不存在，Mod 第一次运行时会自动创建默认配置。
 
-## Output Files
+## 导出文件
 
-When a song starts, ManiaInMuse writes files under:
+每次进入歌曲后，ManiaInMuse 会把谱面文件写入：
 
 ```text
 Muse Dash/UserData/ManiaInMuse/maps/
 ```
 
-Generated files:
+生成的文件：
 
-- `latest.csv`: latest raw chart export.
-- `latest.osu`: latest converted osu!mania map.
-- `yyyyMMdd_HHmmss_fff_<noteCount>_notes.csv`: timestamped raw export cache.
+- `latest.csv`：最近一次进入歌曲导出的原始谱面数据。
+- `latest.osu`：最近一次转换得到的 osu!mania 谱面。
+- `yyyyMMdd_HHmmss_fff_<noteCount>_notes.csv`：带时间戳的历史 CSV 导出缓存。
 
-Old timestamped CSV exports are cleaned automatically by the hidden cache default.
+历史 CSV 会按默认缓存策略自动清理，避免目录无限增长。
 
-## Player.cfg
+## Player.cfg 配置
 
-Default config:
+默认配置示例：
 
 ```ini
 [Player]
@@ -99,61 +100,63 @@ LaneTypes = A,G,A,G,A,G,A
 Split = 3
 ```
 
-Main parameters:
+参数含义：
 
-- `FallTimeMs`: time from note spawn to judgement line, in milliseconds.
-- `TrackWidth`, `TrackHeight`: overlay playfield size on a 1920x1080 reference canvas.
-- `NoteWidth`, `NoteHeight`: click note size. Hold heads use the same size; hold bodies use `NoteWidth`.
-- `PositionX`, `PositionY`: playfield center offset from screen center.
-- `BackgroundColor`, `NoteColor`, `HoldColor`: RGBA colors, `0-255`.
-- `JudgementLinePosition`: judgement line position inside the track. `0` is top, `0.5` is center, `1` is bottom.
-- `KeyCount`: active key count, valid range `2-7`.
-- `[keys:x] LaneTypes`: lane posture layout. `A` means air, `G` means ground.
-- `[keys:x] Split`: number of lanes treated as the left side for alternating multi patterns.
+- `FallTimeMs`：键从顶部生成到判定线的下落时间，单位毫秒。
+- `TrackWidth`、`TrackHeight`：覆盖层轨道区域的宽高，基于 1920x1080 参考画布。
+- `NoteWidth`、`NoteHeight`：点击键方块的宽高。长按头使用同样大小，长按身体使用 `NoteWidth`。
+- `PositionX`、`PositionY`：轨道区域相对屏幕中心的偏移。
+- `BackgroundColor`：轨道背景颜色，格式为 `R,G,B,A`，范围 `0-255`。
+- `NoteColor`：点击键和长按头的颜色。
+- `HoldColor`：长按身体的颜色。
+- `JudgementLinePosition`：判定线在轨道区域内的相对位置。`0` 是顶部，`0.5` 是中间，`1` 是底部。
+- `KeyCount`：当前使用的键数，合法范围是 `2-7`。
+- `[keys:x] LaneTypes`：指定 x 键模式下每个轨道对应空中或地面。`A` 表示空中，`G` 表示地面。
+- `[keys:x] Split`：指定 x 键模式下左半区轨道数量，用于 multi 的左右对拍分配。
 
-## Note Type Mapping
+## 谱面类型映射
 
-| Type | Name | Handling |
+| Type | 名称 | 处理方式 |
 | --- | --- | --- |
-| `1` | `monster` | normal tap |
-| `2` | `block` | dodge check, inserts a utility tap only when needed |
-| `3` | `hold` | hold note with duration |
-| `4` | `ghost` | normal tap |
-| `5` | `boss` | one tap, air/ground does not matter |
-| `6` | `energy` | posture-dependent collection |
-| `7` | `music` | posture-dependent collection |
-| `8` | `multi` | BPM-aware repeated chords/taps |
+| `1` | `monster` | 普通点击 |
+| `2` | `block` | 检查是否会被障碍命中，必要时插入躲避键 |
+| `3` | `hold` | 有持续时间的长按 |
+| `4` | `ghost` | 按普通点击处理 |
+| `5` | `boss` | 点击一次即可，空中或地面都可以 |
+| `6` | `energy` | 按人物所在空中/地面位置收集 |
+| `7` | `music` | 按人物所在空中/地面位置收集 |
+| `8` | `multi` | 根据 BPM 生成连续对拍或重复点击 |
 
-During a multi section, other note types are ignored for conversion because Muse Dash does not require them to be handled independently during multi.
+在 multi 持续期间，转换器会忽略其他类型的 note，因为 Muse Dash 规则中 multi 期间不需要单独处理这些对象。
 
-## Build
+## 编译
 
-The project references assemblies generated by MelonLoader inside the local Muse Dash installation:
+项目会引用本地 Muse Dash 目录中由 MelonLoader 生成的程序集：
 
 ```xml
 <ReferencePath>D:\APP Profile\steam\steamapps\common\Muse Dash</ReferencePath>
 ```
 
-If your Muse Dash path is different, update `AccuracyIndicator/AccuracyIndicator.csproj`.
+如果你的 Muse Dash 安装路径不同，需要修改 `AccuracyIndicator/AccuracyIndicator.csproj` 中的 `ReferencePath`。
 
-Build:
+编译命令：
 
 ```powershell
 dotnet build "D:\_1 Resourse\_Tool\musedash\mods\ManiaInMuse\AccuracyIndicator\AccuracyIndicator.csproj" -c Release
 ```
 
-The DLL is written to:
+DLL 输出路径：
 
 ```text
 D:\_1 Resourse\_Tool\musedash\mods\ManiaInMuse\debug\ManiaInMuse.dll
 ```
 
-## Repository Layout
+## 目录结构
 
-- `AccuracyIndicator/`: main MelonLoader mod source. The namespace is historical; the assembly and mod name are `ManiaInMuse`.
-- `OsuGenerator/`: standalone CSV-to-osu converter prototype.
-- `DirectOsuPlayer/`: browser prototype used during early player testing.
+- `AccuracyIndicator/`：主 Mod 源码。命名空间仍保留历史名称，但程序集名和 Mod 名是 `ManiaInMuse`。
+- `OsuGenerator/`：独立 CSV 转 osu 的原型工具。
+- `DirectOsuPlayer/`：早期用于验证播放器显示效果的浏览器原型。
 
-## Current Version
+## 当前版本
 
 `1.3.2`
