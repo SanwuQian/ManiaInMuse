@@ -5,24 +5,38 @@
         <RootNamespace>AccuracyIndicator</RootNamespace>
         <AssemblyName>ManiaInMuse</AssemblyName>
         <TargetFramework>net6.0</TargetFramework>
+        <Version>2.0.0</Version>
+        <AssemblyVersion>2.0.0.0</AssemblyVersion>
+        <FileVersion>2.0.0.0</FileVersion>
+        <InformationalVersion>2.0.0</InformationalVersion>
+        <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
         <LangVersion>latest</LangVersion>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>disable</Nullable>
-        <ReferencePath>D:\APP Profile\steam\steamapps\common\Muse Dash</ReferencePath>
+        <MuseDashPath Condition="'$(MuseDashPath)' == ''">D:\APP Profile\steam\steamapps\common\Muse Dash</MuseDashPath>
+        <RequiredMelonLoaderVersion>0.7.3.0</RequiredMelonLoaderVersion>
         <OutputPath>..\debug</OutputPath>
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     </PropertyGroup>
 
     <ItemGroup>
-        <Reference Include="0Harmony"><HintPath>$(ReferencePath)\MelonLoader\net6\0Harmony.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="Assembly-CSharp"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\Assembly-CSharp-firstpass.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="Il2CppInterop.Runtime"><HintPath>$(ReferencePath)\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="Il2Cppmscorlib"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="MelonLoader"><HintPath>$(ReferencePath)\MelonLoader\net6\MelonLoader.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="UnityEngine.CoreModule"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="UnityEngine.UI"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.UI.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="UnityEngine.UIModule"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.UIModule.dll</HintPath><Private>False</Private></Reference>
-        <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ReferencePath)\MelonLoader\Il2CppAssemblies\UnityEngine.TextRenderingModule.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="0Harmony"><HintPath>$(MuseDashPath)\MelonLoader\net6\0Harmony.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Assembly-CSharp"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\Assembly-CSharp-firstpass.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Il2CppInterop.Runtime"><HintPath>$(MuseDashPath)\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="Il2Cppmscorlib"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="MelonLoader"><HintPath>$(MuseDashPath)\MelonLoader\net6\MelonLoader.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.CoreModule"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.UI"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\UnityEngine.UI.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.UIModule"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\UnityEngine.UIModule.dll</HintPath><Private>False</Private></Reference>
+        <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(MuseDashPath)\MelonLoader\Il2CppAssemblies\UnityEngine.TextRenderingModule.dll</HintPath><Private>False</Private></Reference>
     </ItemGroup>
+
+    <Target Name="ValidateMelonLoaderVersion" BeforeTargets="ResolveReferences">
+        <GetAssemblyIdentity AssemblyFiles="$(MuseDashPath)\MelonLoader\net6\MelonLoader.dll">
+            <Output TaskParameter="Assemblies" ItemName="MelonLoaderAssemblyIdentity" />
+        </GetAssemblyIdentity>
+        <Error Condition="'%(MelonLoaderAssemblyIdentity.Version)' != '$(RequiredMelonLoaderVersion)'"
+               Text="ManiaInMuse 2.0.0 must be built against MelonLoader $(RequiredMelonLoaderVersion), but found %(MelonLoaderAssemblyIdentity.Version)." />
+    </Target>
 </Project>

@@ -25,7 +25,7 @@ ManiaInMuse 是一个谱面读取、谱面转换和游戏内可视化播放器�
 ## 运行环境
 
 - Muse Dash，Il2Cpp 版本。
-- MelonLoader net6 运行环境。当前开发和测试使用的是 MelonLoader `0.6.6 Open-Beta`。
+- MelonLoader `0.7.3` net6 运行环境。
 - 如果需要从源码编译，需要安装 .NET 6 SDK。
 
 ManiaInMuse 本身不强依赖 MuseDashMirror 或 CustomAlbums。如果你要游玩自定义专辑，CustomAlbums 等 Mod 仍然需要按它们自己的要求安装。
@@ -139,10 +139,16 @@ Split = 3
 项目会引用本地 Muse Dash 目录中由 MelonLoader 生成的程序集：
 
 ```xml
-<ReferencePath>D:\APP Profile\steam\steamapps\common\Muse Dash</ReferencePath>
+<MuseDashPath>D:\APP Profile\steam\steamapps\common\Muse Dash</MuseDashPath>
 ```
 
-如果你的 Muse Dash 安装路径不同，需要修改 `AccuracyIndicator/AccuracyIndicator.csproj` 中的 `ReferencePath`。
+如果 Muse Dash 安装路径不同，可以在编译时传入 `MuseDashPath`：
+
+```powershell
+dotnet build "AccuracyIndicator\AccuracyIndicator.csproj" -c Release -p:MuseDashPath="你的 Muse Dash 目录"
+```
+
+该目录必须安装 MelonLoader `0.7.3`；项目会在编译前检查 `MelonLoader.dll` 的版本。
 
 编译命令：
 
@@ -164,4 +170,4 @@ D:\_1 Resourse\_Tool\musedash\mods\ManiaInMuse\debug\ManiaInMuse.dll
 
 ## 当前版本
 
-`1.3.2`
+`2.0.0`
