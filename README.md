@@ -67,6 +67,7 @@ Muse Dash/UserData/ManiaInMuse/maps/
 
 ```ini
 [Player]
+OffsetMs = 0
 FallTimeMs = 480
 TrackWidth = 480
 TrackHeight = 1080
@@ -107,6 +108,7 @@ Split = 3
 
 参数含义：
 
+- `OffsetMs`：覆盖层时间偏移，单位毫秒，范围 `-1000` 到 `1000`。数值越大，键越晚到达判定线；负数会让键提前。
 - `FallTimeMs`：键从顶部生成到判定线的下落时间，单位毫秒。
 - `TrackWidth`、`TrackHeight`：覆盖层轨道区域的宽高，基于 1920x1080 参考画布。
 - `NoteWidth`、`NoteHeight`：点击键方块的宽高。长按头使用同样大小，长按身体使用 `NoteWidth`。

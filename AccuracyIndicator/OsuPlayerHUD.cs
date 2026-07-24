@@ -15,6 +15,7 @@ public class OsuPlayerHUD : MonoBehaviour
     private readonly List<NoteVisual> _visuals = new();
     private RectTransform _playfield;
     private PlayerConfig _config;
+    private float _lastObjectEndSec;
     private bool _dead;
     private bool _loggedMissingFile;
 
@@ -73,13 +74,15 @@ public class OsuPlayerHUD : MonoBehaviour
     }
 
     [HideFromIl2Cpp]
-    internal void LoadObjects(IReadOnlyList<OsuPlayObject> objects)
+    internal void LoadObjects(IReadOnlyList<OsuPlayObject> objects, PlayerConfig config)
     {
+        _config = config;
         _objects.Clear();
         foreach (var obj in objects)
             _objects.Add(obj);
 
         _objects.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
+        _lastObjectEndSec = LatestObjectEndSec();
         HideAll();
         MelonLogger.Msg($"[ManiaInMuse] osu player refreshed {_objects.Count} objects");
     }
@@ -103,6 +106,7 @@ public class OsuPlayerHUD : MonoBehaviour
             foreach (var obj in OsuPlayObjectReader.Read(path, _config))
                 _objects.Add(obj);
 
+            _lastObjectEndSec = LatestObjectEndSec();
             MelonLogger.Msg($"[ManiaInMuse] osu player loaded {_objects.Count} objects from {path}");
         }
         catch (Exception ex)
@@ -123,7 +127,7 @@ public class OsuPlayerHUD : MonoBehaviour
         }
 
         Main.UpdatePlaybackState();
-        if (!Main.ShouldShowPlayerHud())
+        if (!Main.ShouldShowPlayerHud(_lastObjectEndSec, _config.OffsetSec))
         {
             SetPlayfieldVisible(false);
             HideAll();
@@ -136,6 +140,7 @@ public class OsuPlayerHUD : MonoBehaviour
 
     private void Render(float songTime)
     {
+        float visualSongTime = songTime - _config.OffsetSec;
         int visualIndex = 0;
         float trackTopY = _config.TrackHeight * 0.5f;
         float trackBottomY = -_config.TrackHeight * 0.5f;
@@ -145,13 +150,13 @@ public class OsuPlayerHUD : MonoBehaviour
         for (int i = 0; i < _objects.Count && visualIndex < _visuals.Count; i++)
         {
             var obj = _objects[i];
-            if (obj.EndSec < songTime - 0.1f)
+            if (obj.EndSec < visualSongTime - 0.1f)
                 continue;
-            if (obj.StartSec > songTime + _config.FallTimeSec)
+            if (obj.StartSec > visualSongTime + _config.FallTimeSec)
                 break;
 
-            float headY = YForTime(obj.StartSec, songTime, spawnY, judgementY, _config.FallTimeSec);
-            float tailY = obj.IsHold ? YForTime(obj.EndSec, songTime, spawnY, judgementY, _config.FallTimeSec) : headY;
+            float headY = YForTime(obj.StartSec, visualSongTime, spawnY, judgementY, _config.FallTimeSec);
+            float tailY = obj.IsHold ? YForTime(obj.EndSec, visualSongTime, spawnY, judgementY, _config.FallTimeSec) : headY;
 
             bool headVisible = headY >= trackBottomY - _config.NoteHeight && headY <= trackTopY + _config.NoteHeight;
             bool bodyVisible = obj.IsHold && Math.Max(headY, tailY) >= trackBottomY && Math.Min(headY, tailY) <= trackTopY;
@@ -177,6 +182,14 @@ public class OsuPlayerHUD : MonoBehaviour
         return config.TrackHeight * (0.5f - config.JudgementLinePosition);
     }
 
+    private float LatestObjectEndSec()
+    {
+        float latest = 0f;
+        foreach (var obj in _objects)
+            latest = Math.Max(latest, obj.EndSec);
+        return latest;
+    }
+
     private void HideAll()
     {
         foreach (var visual in _visuals)
@@ -193,6 +206,7 @@ public class OsuPlayerHUD : MonoBehaviour
     {
         _dead = true;
         _objects.Clear();
+        _lastObjectEndSec = 0f;
         HideAll();
 
         if (Main.PlayerHUD == this)

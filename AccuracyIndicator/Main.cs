@@ -113,7 +113,7 @@ internal class Main : MelonMod
             try
             {
                 if (HasLivePlayerHud())
-                    PlayerHUD.LoadObjects(playObjects);
+                    PlayerHUD.LoadObjects(playObjects, playerConfig);
             }
             catch (Exception ex)
             {
@@ -347,7 +347,7 @@ internal class Main : MelonMod
         }
     }
 
-    internal static bool ShouldShowPlayerHud()
+    internal static bool ShouldShowPlayerHud(float lastObjectEndSec, float visualOffsetSec = 0f)
     {
         if (!Active)
             return false;
@@ -356,7 +356,10 @@ internal class Main : MelonMod
         if (sb == null || !sb.isInGame)
             return false;
 
-        return Notes.Count == 0 || SongTime <= Notes[^1].TimeSec + 0.5f;
+        float lastVisibleTime = lastObjectEndSec > 0f
+            ? lastObjectEndSec
+            : Notes.Count > 0 ? Notes[^1].TimeSec : 0f;
+        return SongTime <= lastVisibleTime + visualOffsetSec + 0.5f;
     }
 
     internal static void ZeroCounters()

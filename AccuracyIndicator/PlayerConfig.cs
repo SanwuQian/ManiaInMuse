@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace AccuracyIndicator;
 
@@ -9,6 +10,7 @@ internal sealed class PlayerConfig
     private const int MaxKeyCount = 7;
     private const int DefaultKeyCount = 4;
 
+    internal float OffsetMs { get; private set; }
     internal float FallTimeMs { get; private set; } = 480f;
     internal float TrackWidth { get; private set; } = 480f;
     internal float TrackHeight { get; private set; } = 1080f;
@@ -33,6 +35,7 @@ internal sealed class PlayerConfig
     internal int ShortGapSegmentBreakMs { get; private set; } = 500;
     internal IReadOnlyList<LaneDefinition> Lanes { get; private set; } = BuildLanes(DefaultKeyCount, DefaultPosturesFor(DefaultKeyCount), null);
 
+    internal float OffsetSec => OffsetMs / 1000f;
     internal float FallTimeSec => Math.Max(1f, FallTimeMs) / 1000f;
     internal float OptimizerChordWindowSec => OptimizerChordWindowMs / 1000f;
     internal float ShortGapTargetSec => ShortGapTargetMs / 1000f;
@@ -89,6 +92,7 @@ internal sealed class PlayerConfig
         config.NoteWidth = Math.Max(1f, config.NoteWidth);
         config.NoteHeight = Math.Max(1f, config.NoteHeight);
         config.JudgementLinePosition = Math.Clamp(config.JudgementLinePosition, 0f, 1f);
+        config.OffsetMs = float.IsFinite(config.OffsetMs) ? Math.Clamp(config.OffsetMs, -1000f, 1000f) : 0f;
         config.FallTimeMs = Math.Max(1f, config.FallTimeMs);
         config.CacheMaxMapFiles = Math.Max(0, config.CacheMaxMapFiles);
         config.OptimizerChordWindowMs = Math.Clamp(config.OptimizerChordWindowMs, 1, 50);
@@ -227,6 +231,9 @@ internal sealed class PlayerConfig
         {
             switch (lowerKey)
             {
+                case "offsetms":
+                    OffsetMs = number;
+                    return;
                 case "falltimems":
                 case "falltime":
                     FallTimeMs = number;
@@ -476,68 +483,92 @@ internal sealed class PlayerConfig
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
-            if (File.Exists(ConfigPath))
-                return;
+            if (!File.Exists(ConfigPath))
+            {
+                File.WriteAllText(ConfigPath,
+                    """
+                    [Player]
+                    # Visual timing offset in milliseconds, range -1000 to 1000. Positive values make notes fall later.
+                    OffsetMs = 0
 
-            File.WriteAllText(ConfigPath,
-                """
-                [Player]
-                # Time from note spawn at top to judgement line, in milliseconds.
-                FallTimeMs = 480
+                    # Time from note spawn at top to judgement line, in milliseconds.
+                    FallTimeMs = 480
 
-                # Track rectangle size in 1920x1080 canvas coordinates.
-                TrackWidth = 480
-                TrackHeight = 1080
+                    # Track rectangle size in 1920x1080 canvas coordinates.
+                    TrackWidth = 480
+                    TrackHeight = 1080
 
-                # Click note size. Hold heads use the same size; hold bodies use NoteWidth.
-                NoteWidth = 120
-                NoteHeight = 80
+                    # Click note size. Hold heads use the same size; hold bodies use NoteWidth.
+                    NoteWidth = 120
+                    NoteHeight = 80
 
-                # Track center offset from screen center.
-                PositionX = 0
-                PositionY = 0
+                    # Track center offset from screen center.
+                    PositionX = 0
+                    PositionY = 0
 
-                # Colors are R,G,B or R,G,B,A, range 0-255.
-                BackgroundColor = 0,0,0,255
-                NoteColor = 0,220,70,255
-                HoldColor = 110,110,110,255
+                    # Colors are R,G,B or R,G,B,A, range 0-255.
+                    BackgroundColor = 0,0,0,255
+                    NoteColor = 0,220,70,255
+                    HoldColor = 110,110,110,255
 
-                # Judgement line position within the track: 0 = top, 0.5 = center, 1 = bottom.
-                JudgementLinePosition = 1
+                    # Judgement line position within the track: 0 = top, 0.5 = center, 1 = bottom.
+                    JudgementLinePosition = 1
 
-                # Key count, valid range: 2-7.
-                KeyCount = 4
+                    # Key count, valid range: 2-7.
+                    KeyCount = 4
 
-                # Per-key lane posture presets. A = air, G = ground.
-                [keys:2]
-                LaneTypes = A,G
-                Split = 1
+                    # Per-key lane posture presets. A = air, G = ground.
+                    [keys:2]
+                    LaneTypes = A,G
+                    Split = 1
 
-                [keys:3]
-                LaneTypes = A,G,A
-                Split = 1
+                    [keys:3]
+                    LaneTypes = A,G,A
+                    Split = 1
 
-                [keys:4]
-                LaneTypes = A,G,A,G
-                Split = 2
+                    [keys:4]
+                    LaneTypes = A,G,A,G
+                    Split = 2
 
-                [keys:5]
-                LaneTypes = A,G,A,G,A
-                Split = 2
+                    [keys:5]
+                    LaneTypes = A,G,A,G,A
+                    Split = 2
 
-                [keys:6]
-                LaneTypes = A,A,G,G,A,G
-                Split = 3
+                    [keys:6]
+                    LaneTypes = A,A,G,G,A,G
+                    Split = 3
 
-                [keys:7]
-                LaneTypes = A,G,A,G,A,G,A
-                Split = 3
-                """);
+                    [keys:7]
+                    LaneTypes = A,G,A,G,A,G,A
+                    Split = 3
+                    """);
+            }
+
+            EnsureOffsetOption();
         }
         catch (Exception ex)
         {
             MelonLogger.Warning($"[ManiaInMuse] Failed to create player config: {ex.Message}");
         }
+    }
+
+    private static void EnsureOffsetOption()
+    {
+        var lines = File.ReadAllLines(ConfigPath).ToList();
+        if (lines.Any(line =>
+            {
+                int separator = line.IndexOf('=');
+                return separator > 0
+                    && line[..separator].Trim().Equals("OffsetMs", StringComparison.OrdinalIgnoreCase);
+            }))
+            return;
+
+        int playerSection = lines.FindIndex(line => line.Trim().Equals("[Player]", StringComparison.OrdinalIgnoreCase));
+        int insertAt = playerSection >= 0 ? playerSection + 1 : 0;
+        lines.Insert(insertAt, "# Visual timing offset in milliseconds, range -1000 to 1000. Positive values make notes fall later.");
+        lines.Insert(insertAt + 1, "OffsetMs = 0");
+        lines.Insert(insertAt + 2, "");
+        File.WriteAllLines(ConfigPath, lines, new UTF8Encoding(false));
     }
 
     private static bool TryReadFloat(string value, out float result)
