@@ -43,7 +43,7 @@ Muse Dash/
       Player.cfg
 ```
 
-如果 `Player.cfg` 不存在，Mod 第一次运行时会自动创建默认配置。
+如果 `Player.cfg` 不存在，Mod 启动时会自动创建默认配置。每次进入歌曲时都会重新读取配置，因此运行中修改或删除配置后，无需重启游戏。
 
 ## 导出文件
 
@@ -172,4 +172,4 @@ D:\_1 Resourse\_Tool\musedash\mods\ManiaInMuse\debug\ManiaInMuse.dll
 
 ## 当前版本
 
-`2.0.0`
+`2.0.1`

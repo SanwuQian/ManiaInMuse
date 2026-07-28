@@ -23,7 +23,7 @@ public class OsuPlayerHUD : MonoBehaviour
 
     private void Start()
     {
-        _config = PlayerConfig.LoadOrCreate();
+        _config ??= Main.LoadPlayerConfig();
 
         var canvas = gameObject.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;

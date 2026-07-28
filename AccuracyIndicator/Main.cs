@@ -30,12 +30,31 @@ internal class Main : MelonMod
     internal static float CurrentBpm;
     internal static float CurrentRuntimeBpm;
 
+    public override void OnInitializeMelon()
+    {
+        LoadPlayerConfig();
+    }
+
+    internal static PlayerConfig LoadPlayerConfig()
+    {
+        try
+        {
+            return PlayerConfig.LoadOrCreate();
+        }
+        catch (Exception ex)
+        {
+            MelonLogger.Warning($"[ManiaInMuse] Failed to load player config; using defaults: {ex.Message}");
+            return new PlayerConfig();
+        }
+    }
+
     [HarmonyPatch(typeof(StageBattleComponent), nameof(StageBattleComponent.GameStart))]
     private static class GameStartHook
     {
         private static void Postfix()
         {
             ResetRun("new game start", false, false);
+            var playerConfig = LoadPlayerConfig();
 
             var sb = StageBattleComponent.instance;
             if (sb == null)
@@ -89,7 +108,6 @@ internal class Main : MelonMod
                 return;
             }
 
-            var playerConfig = PlayerConfig.LoadOrCreate();
             try
             {
                 MapLoader.SaveCurrentMap(Notes, CurrentBpm, CurrentRuntimeBpm, playerConfig);
