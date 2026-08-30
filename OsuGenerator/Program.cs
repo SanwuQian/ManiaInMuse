@@ -402,7 +402,10 @@ internal static class ManiaConverter
     private const int BalanceWindowMs = 4000;
     private const int MusicWindowMs = 50;
     private const int BlockWindowMs = 120;
-    private const int AirHoldMs = 500;
+    // 有效滞空时长：起跳后这段时间内可以获取空中音符、规避地面齿轮（最后约 100ms 视为地面）。
+    private const int AirHoldMs = 400;
+    // 滞空动画总时长：期间不能二段跳。
+    private const int AirborneAnimMs = 500;
     private const int MultiEndPaddingMs = 80;
 
     private static readonly int[] AirLanes = [1, 2, 5];
@@ -598,9 +601,15 @@ internal static class ManiaConverter
         const int RiskLowMs = 400;
         const int RiskHighMs = 600;
 
-        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap
+        // 地面点击的时刻，用于识别"天地双押"：同一时刻既有空中键又有地面键，结果是地面而非起跳。
+        var groundTapMs = new HashSet<int>(objects
+            .Where(o => !o.IsHold && o.Posture == Posture.Ground)
+            .Select(o => o.StartMs));
+
+        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap，排除与地面键同刻的（天地双押）。
         var jumps = objects
             .Where(o => !o.IsHold && o.Posture == Posture.Air)
+            .Where(o => !groundTapMs.Contains(o.StartMs))
             .Select(o => o.StartMs)
             .OrderBy(t => t)
             .ToList();
@@ -622,9 +631,13 @@ internal static class ManiaConverter
 
             int t = gear.TimeMs;
 
+            // 只有"已落地"（距上次起跳 >= 动画时长）的空键才是真正的新起跳；
+            // 滞空中的空键是 no-op（不能二段跳），不推进 currentJump。
             while (jumpIndex < jumps.Count && jumps[jumpIndex] <= t)
             {
-                currentJump = Math.Max(currentJump, jumps[jumpIndex]);
+                int j = jumps[jumpIndex];
+                if (currentJump < 0 || j - currentJump >= AirborneAnimMs)
+                    currentJump = j;
                 jumpIndex++;
             }
 

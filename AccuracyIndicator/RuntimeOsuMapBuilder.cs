@@ -7,11 +7,14 @@ internal static class RuntimeOsuMapBuilder
 {
     private const float PreferredMinGapSec = 0.2f;
     private const float BalanceWindowSec = 4f;
-    private const float AirHoldSec = 0.5f;
-    // 齿轮落地边界：自然落地约 500ms，检测窗口为 ±100ms 误差。
-    private const float GearRiskToleranceSec = 0.100f;
-    private const float GearRiskLowSec = AirHoldSec - GearRiskToleranceSec;
-    private const float GearRiskHighSec = AirHoldSec + GearRiskToleranceSec;
+    // 有效滞空时长：起跳后这段时间内可以获取空中音符、规避地面齿轮。
+    // 滞空动画总长约 500ms，最后约 100ms 视为在地面，因此有效滞空约为 400ms。
+    private const float AirHoldSec = 0.400f;
+    // 滞空动画总时长：期间不能二段跳，必须落地后才能重新起跳。
+    private const float AirborneAnimSec = 0.500f;
+    // 齿轮落地边界：危险窗口 [0.400, 0.600]（有效滞空结束到落地 + 余量）。
+    private const float GearRiskLowSec = 0.400f;
+    private const float GearRiskHighSec = 0.600f;
     private const float MusicWindowSec = 0.05f;
     private const float BlockWindowSec = 0.12f;
     private const float MultiEndPaddingSec = 0.08f;
@@ -242,10 +245,17 @@ internal static class RuntimeOsuMapBuilder
         RuntimeLaneScheduler scheduler,
         PlayerConfig config)
     {
-        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap（pass1 的空中 monster/ghost/boss）。
-        // 必须在优化器之后取，因为 boss 可能被换到任意姿态轨。
+        // 地面点击的时刻（按毫秒分组），用于识别"天地双押"：同一时刻既有空中键又有地面键，
+        // 结果是地面状态而非起跳。
+        var groundTapMs = new HashSet<int>(objects
+            .Where(o => !o.IsHold && !config.IsAirLane(o.Lane))
+            .Select(o => (int)Math.Round(o.StartSec * 1000f)));
+
+        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap（pass1 的空中 monster/ghost/boss），
+        // 排除与地面键同刻的（天地双押）。必须在优化器之后取，因为 boss 可能被换到任意姿态轨。
         var jumps = objects
             .Where(o => !o.IsHold && config.IsAirLane(o.Lane))
+            .Where(o => !groundTapMs.Contains((int)Math.Round(o.StartSec * 1000f)))
             .Select(o => o.StartSec)
             .OrderBy(t => t)
             .ToList();
@@ -268,10 +278,13 @@ internal static class RuntimeOsuMapBuilder
 
             float t = gear.TimeSec;
 
-            // 吸收早于/等于 t 的起跳事件（pass1 空中 tap 视作起跳）
+            // 吸收早于/等于 t 的起跳事件。只有"已落地"（距上次起跳 >= 动画时长）的空键
+            // 才是真正的新起跳；滞空中的空键是 no-op（不能二段跳），不推进 currentJump。
             while (jumpIndex < jumps.Count && jumps[jumpIndex] <= t)
             {
-                currentJump = Math.Max(currentJump, jumps[jumpIndex]);
+                float j = jumps[jumpIndex];
+                if (currentJump < 0f || j - currentJump >= AirborneAnimSec)
+                    currentJump = j;
                 jumpIndex++;
             }
 
