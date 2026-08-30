@@ -8,6 +8,10 @@ internal static class RuntimeOsuMapBuilder
     private const float PreferredMinGapSec = 0.2f;
     private const float BalanceWindowSec = 4f;
     private const float AirHoldSec = 0.5f;
+    // 齿轮落地边界：自然落地约 500ms，检测窗口为 ±100ms 误差。
+    private const float GearRiskToleranceSec = 0.100f;
+    private const float GearRiskLowSec = AirHoldSec - GearRiskToleranceSec;
+    private const float GearRiskHighSec = AirHoldSec + GearRiskToleranceSec;
     private const float MusicWindowSec = 0.05f;
     private const float BlockWindowSec = 0.12f;
     private const float MultiEndPaddingSec = 0.08f;
@@ -44,6 +48,8 @@ internal static class RuntimeOsuMapBuilder
 
         if (config.EnableLocalSwapOptimizer)
             LocalSwapOptimizer.Optimize(objects, config);
+
+        PlanGearLandings(notes, multiNotes, objects, scheduler, config);
 
         foreach (var note in notes.Where(n => n.Type is 2 or 7).OrderBy(n => n.TimeSec))
         {
@@ -223,6 +229,93 @@ internal static class RuntimeOsuMapBuilder
             return;
 
         AddTap(note.TimeSec, safePosture, scheduler, boss: false, OsuPlayObjectKind.UtilityTap);
+    }
+
+    // 姿态规划 pass：修复"地面高度齿轮（block type 2, IsAir==false）"在自然落地边界漏掉重新起跳键的问题。
+    // 原理：不依赖 500ms 自然落地时刻，而是在危险窗口 [GearRiskLowSec, GearRiskHighSec] 内显式插入
+    // 一次"提前落地"（地面 tap）+ 一次"重新起跳"（空中 tap，放在齿轮同时）。落地/起跳后姿态由显式
+    // 事件决定，与真实滞空是 450/500/550ms 无关。
+    private static void PlanGearLandings(
+        IReadOnlyList<NoteInfo> notes,
+        IReadOnlyList<NoteInfo> multiNotes,
+        List<OsuPlayObject> objects,
+        RuntimeLaneScheduler scheduler,
+        PlayerConfig config)
+    {
+        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap（pass1 的空中 monster/ghost/boss）。
+        // 必须在优化器之后取，因为 boss 可能被换到任意姿态轨。
+        var jumps = objects
+            .Where(o => !o.IsHold && config.IsAirLane(o.Lane))
+            .Select(o => o.StartSec)
+            .OrderBy(t => t)
+            .ToList();
+        int jumpIndex = 0;
+
+        // "必须保持空中"的对象时刻（地面齿轮 + 空中 music），用于计算落地键下界 Tl：
+        // 落地键不能早于这些对象，否则会把还在靠当前滞空收集/躲避的对象落地丢掉。
+        var airRequirements = notes
+            .Where(n => (n.Type == 2 && !n.IsAir) || (n.Type == 7 && n.IsAir))
+            .Select(n => n.TimeSec)
+            .OrderBy(t => t)
+            .ToList();
+
+        float currentJump = float.NegativeInfinity;
+
+        foreach (var gear in notes.Where(n => n.Type == 2 && !n.IsAir).OrderBy(n => n.TimeSec))
+        {
+            if (IsInsideMulti(gear, multiNotes))
+                continue;
+
+            float t = gear.TimeSec;
+
+            // 吸收早于/等于 t 的起跳事件（pass1 空中 tap 视作起跳）
+            while (jumpIndex < jumps.Count && jumps[jumpIndex] <= t)
+            {
+                currentJump = Math.Max(currentJump, jumps[jumpIndex]);
+                jumpIndex++;
+            }
+
+            if (currentJump < 0f)
+            {
+                // 首个齿轮：pass2 的 EnsureBlockDodged 会在 t 处插入空中键起跳，这里预判推进，
+                // 避免后续齿轮把"第一个齿轮的起跳"误判成"仍然没有起跳"。
+                currentJump = t;
+                continue;
+            }
+
+            float gap = t - currentJump;
+            if (gap < GearRiskLowSec)
+                continue;      // 已被当前跳跃安全覆盖
+            if (gap > GearRiskHighSec)
+            {
+                // 已自然落地：EnsureBlockDodged 会在 t 处插入空中键起跳，预判推进。
+                currentJump = t;
+                continue;
+            }
+
+            // 危险窗口：最后一个"必须保持空中"的对象（无则取 currentJump）
+            float tl = currentJump;
+            foreach (float req in airRequirements)
+            {
+                if (req >= currentJump && req < t)
+                    tl = req;
+            }
+
+            float tg = (tl + t) * 0.5f;   // 提前落地（中点，落在 (Tl, t) 内）
+            float tj = t;                  // 重新起跳 = block 同时按空，无提前量
+
+            // 保证落地键与起跳键至少相差 1ms，避免 PostureAt 按毫秒分组时 ground 把 air 吞掉
+            if (tj - tg < 0.001f)
+                tg = tj - 0.001f;
+
+            int groundLane = scheduler.ChooseLane(tg, tg, LanePosture.Ground, boss: false);
+            scheduler.Add(groundLane, tg, tg, OsuPlayObjectKind.UtilityTap);
+
+            int airLane = scheduler.ChooseLane(tj, tj, LanePosture.Air, boss: false);
+            scheduler.Add(airLane, tj, tj, OsuPlayObjectKind.UtilityTap);
+
+            currentJump = tj;
+        }
     }
 
     private static void RemoveExactDuplicates(List<OsuPlayObject> objects)

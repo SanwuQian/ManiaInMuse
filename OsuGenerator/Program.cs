@@ -439,6 +439,8 @@ internal static class ManiaConverter
             }
         }
 
+        PlanGearLandings(notes, multiNotes, result.Objects, scheduler);
+
         foreach (var note in notes.Where(n => n.Type is 2 or 7).OrderBy(n => n.TimeMs).ThenBy(n => n.Index))
         {
             if (note.IsInside(multiNotes))
@@ -582,6 +584,89 @@ internal static class ManiaConverter
         int dodgeTime = note.TimeMs;
         int lane = scheduler.ChooseLane(dodgeTime, dodgeTime, safePosture, boss: false);
         scheduler.Add(lane, dodgeTime, dodgeTime, ObjectReason.BlockDodge);
+    }
+
+    // 姿态规划 pass：修复"地面高度齿轮（block type 2, IsAir==false）"在自然落地边界漏掉重新起跳键的问题。
+    // 原理与 RuntimeOsuMapBuilder.PlanGearLandings 一致：在危险窗口 [RiskLowMs, RiskHighMs] 内显式插入
+    // 一次"提前落地"（地面 tap）+ 一次"重新起跳"（空中 tap，放在齿轮同时）。
+    private static void PlanGearLandings(
+        IReadOnlyList<CsvNote> notes,
+        IReadOnlyList<CsvNote> multiNotes,
+        List<ManiaObject> objects,
+        LaneScheduler scheduler)
+    {
+        const int RiskLowMs = 400;
+        const int RiskHighMs = 600;
+
+        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap
+        var jumps = objects
+            .Where(o => !o.IsHold && o.Posture == Posture.Air)
+            .Select(o => o.StartMs)
+            .OrderBy(t => t)
+            .ToList();
+        int jumpIndex = 0;
+
+        // "必须保持空中"的对象时刻（地面齿轮 + 空中 music），用于计算落地键下界 Tl
+        var airRequirements = notes
+            .Where(n => (n.Type == 2 && !n.IsAir) || (n.Type == 7 && n.IsAir))
+            .Select(n => n.TimeMs)
+            .OrderBy(t => t)
+            .ToList();
+
+        int currentJump = -1;
+
+        foreach (var gear in notes.Where(n => n.Type == 2 && !n.IsAir).OrderBy(n => n.TimeMs).ThenBy(n => n.Index))
+        {
+            if (gear.IsInside(multiNotes))
+                continue;
+
+            int t = gear.TimeMs;
+
+            while (jumpIndex < jumps.Count && jumps[jumpIndex] <= t)
+            {
+                currentJump = Math.Max(currentJump, jumps[jumpIndex]);
+                jumpIndex++;
+            }
+
+            if (currentJump < 0)
+            {
+                // 首个齿轮：EnsureBlockDodged 会在 t 处插入空中键起跳，这里预判推进。
+                currentJump = t;
+                continue;
+            }
+
+            int gap = t - currentJump;
+            if (gap < RiskLowMs)
+                continue;
+            if (gap > RiskHighMs)
+            {
+                // 已自然落地：EnsureBlockDodged 会在 t 处插入空中键起跳，预判推进。
+                currentJump = t;
+                continue;
+            }
+
+            // 危险窗口：最后一个"必须保持空中"的对象
+            int tl = currentJump;
+            foreach (int req in airRequirements)
+            {
+                if (req >= currentJump && req < t)
+                    tl = req;
+            }
+
+            int tg = (tl + t) / 2;   // 提前落地（中点）
+            int tj = t;              // 重新起跳 = block 同时按空，无提前量
+
+            if (tj - tg < 1)
+                tg = tj - 1;
+
+            int groundLane = scheduler.ChooseLane(tg, tg, Posture.Ground, boss: false);
+            scheduler.Add(groundLane, tg, tg, ObjectReason.BlockDodge);
+
+            int airLane = scheduler.ChooseLane(tj, tj, Posture.Air, boss: false);
+            scheduler.Add(airLane, tj, tj, ObjectReason.BlockDodge);
+
+            currentJump = tj;
+        }
     }
 
     private static void RemoveExactDuplicates(List<ManiaObject> objects)
