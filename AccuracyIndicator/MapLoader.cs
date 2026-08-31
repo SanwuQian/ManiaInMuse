@@ -12,6 +12,8 @@ internal static class MapLoader
         if (notes.Count == 0)
             return;
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         Directory.CreateDirectory(ExportDirectory);
 
         string fileName = $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_{notes.Count}_notes.csv";
@@ -21,11 +23,16 @@ internal static class MapLoader
 
         File.WriteAllText(path, csv, Encoding.UTF8);
         File.WriteAllText(latestPath, csv, Encoding.UTF8);
+        MelonLogger.Msg($"[ManiaInMuse] [perf] SaveCurrentMap (csv+write): {sw.ElapsedMilliseconds}ms");
 
         MelonLogger.Msg($"[ManiaInMuse] Map exported: {path}");
 
         if (config != null && config.AutoCleanCache)
+        {
+            sw.Restart();
             CleanExportCache(config.CacheMaxMapFiles);
+            MelonLogger.Msg($"[ManiaInMuse] [perf] CleanExportCache: {sw.ElapsedMilliseconds}ms");
+        }
     }
 
     private static void CleanExportCache(int maxMapFiles)
