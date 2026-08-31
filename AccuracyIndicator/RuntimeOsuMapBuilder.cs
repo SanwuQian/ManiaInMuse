@@ -269,7 +269,7 @@ internal static class RuntimeOsuMapBuilder
 
     private static void AddFallbackMulti(NoteInfo note, RuntimeLaneScheduler scheduler, float bpm, int hitCount, float endSec, float available, float startSec = -1, int firstSlot = 0)
     {
-        int chordSize = ChooseMultiChordSize(hitCount, available, scheduler.LaneCount);
+        int chordSize = ChooseMultiChordSize(hitCount, available, scheduler.MaxSideLaneCount);
         int slotCount = Math.Max(1, (int)Math.Ceiling(hitCount / (double)chordSize));
         double fallbackStep = slotCount <= 1 ? 0 : available / (double)(slotCount - 1);
         double bpmStep = ChooseBpmStepSec(bpm);
@@ -1524,6 +1524,19 @@ internal static class RuntimeOsuMapBuilder
         }
 
         internal int LaneCount => _config.KeyCount;
+
+        // 单侧（左/右）最多能放的轨道数，用于限制 multi 和弦大小。
+        internal int MaxSideLaneCount
+        {
+            get
+            {
+                int left = 0;
+                foreach (int lane in _config.AllLaneIndexes)
+                    if (_config.IsLeftSide(lane))
+                        left++;
+                return Math.Max(left, _config.AllLaneIndexes.Length - left);
+            }
+        }
 
         internal void Add(int lane, float startSec, float endSec, OsuPlayObjectKind kind = OsuPlayObjectKind.RegularTap)
         {
