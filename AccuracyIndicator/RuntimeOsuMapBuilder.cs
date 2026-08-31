@@ -42,17 +42,25 @@ internal static class RuntimeOsuMapBuilder
 
     internal static IReadOnlyList<OsuPlayObject> Build(IReadOnlyList<NoteInfo> notes, float bpm, PlayerConfig config)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        MelonLogger.Msg($"[ManiaInMuse] [perf] Build start: {notes.Count} notes");
+        var multiNotes = notes.Where(n => n.Type == 8).ToList();
+
         // 阶段1：构建空地键集合（只定姿态与时间，不分配轨道）
         var keys = BuildKeyCollection(notes, bpm, config);
+        MelonLogger.Msg($"[ManiaInMuse] [perf] BuildKeyCollection: {sw.ElapsedMilliseconds}ms, {keys.Count} keys");
 
         // 阶段2：根据集合分配轨道
-        return AssignLanes(keys, config);
+        var result = AssignLanes(keys, multiNotes, bpm, config);
+        MelonLogger.Msg($"[ManiaInMuse] [perf] Build total: {sw.ElapsedMilliseconds}ms");
+        return result;
     }
 
     // ===== 阶段1：构建空地键集合（只定姿态，不分轨道） =====
 
     private static List<KeyDesc> BuildKeyCollection(IReadOnlyList<NoteInfo> notes, float bpm, PlayerConfig config)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var keys = new List<KeyDesc>();
         var multiNotes = notes.Where(n => n.Type == 8).ToList();
 
@@ -76,15 +84,19 @@ internal static class RuntimeOsuMapBuilder
                     keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, DecideBossPosture(keys, note.TimeSec), OsuPlayObjectKind.BossTap));
                     break;
                 case 8:
-                    AddMultiKeys(keys, note, bpm, config);
+                    AddMultiMarker(keys, note);
                     break;
             }
         }
+        MelonLogger.Msg($"[ManiaInMuse] [perf]   pass1 (monster/hold/boss/multi): {sw.ElapsedMilliseconds}ms, {keys.Count} keys");
 
         // 齿轮落地修复：提前落地 + 重新起跳
+        sw.Restart();
         PlanGearLandings(keys, notes, multiNotes);
+        MelonLogger.Msg($"[ManiaInMuse] [perf]   PlanGearLandings: {sw.ElapsedMilliseconds}ms, {keys.Count} keys");
 
         // 障碍/音符：按姿态模拟补键
+        sw.Restart();
         foreach (var note in notes.Where(n => n.Type is 2 or 7).OrderBy(n => n.TimeSec))
         {
             if (IsInsideMulti(note, multiNotes))
@@ -95,6 +107,7 @@ internal static class RuntimeOsuMapBuilder
             else
                 EnsureBlockDodged(keys, note);
         }
+        MelonLogger.Msg($"[ManiaInMuse] [perf]   pass2 (block/music): {sw.ElapsedMilliseconds}ms, {keys.Count} keys");
 
         keys.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
         return keys;
@@ -190,19 +203,36 @@ internal static class RuntimeOsuMapBuilder
         return false;
     }
 
-    private static void AddMultiKeys(List<KeyDesc> keys, NoteInfo note, float bpm, PlayerConfig config)
+    // 阶段1：multi 结束后立即处于地面，只记录一个地面姿态标记（用于姿态模拟）。
+    // 实际的 multi 轨道（左右对拍，受 Split 控制）在阶段2批量分配。
+    private static void AddMultiMarker(List<KeyDesc> keys, NoteInfo note)
+    {
+        float endSec = note.EndTimeSec > note.TimeSec ? note.EndTimeSec : note.TimeSec + Math.Max(note.MultiDurationSec, 0);
+        keys.Add(new KeyDesc(endSec, endSec, LanePosture.Ground, OsuPlayObjectKind.Multi));
+    }
+
+    // 阶段2：批量分配 multi 轨道（原始逻辑：ChooseMultiPattern 左右对拍，受 Split 控制）。
+    private static void AddMultiBatch(NoteInfo note, RuntimeLaneScheduler scheduler, float bpm)
     {
         int hitCount = Math.Max(1, note.MultiMaxHitCount);
         float endSec = note.EndTimeSec > note.TimeSec ? note.EndTimeSec : note.TimeSec + Math.Max(note.MultiDurationSec, 0);
         float available = Math.Max(0, endSec - note.TimeSec - MultiEndPaddingSec);
         if (available <= 0 || hitCount == 1)
         {
-            keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, LanePosture.Air, OsuPlayObjectKind.Multi, 0));
+            foreach (int lane in scheduler.ChooseMultiLanes(note.TimeSec, 1, 0))
+                scheduler.Add(lane, note.TimeSec, note.TimeSec, OsuPlayObjectKind.Multi);
             return;
         }
 
-        int chordSize = ChooseMultiChordSize(hitCount, available, config.KeyCount);
-        int slotCount = Math.Max(1, (int)Math.Ceiling(hitCount / (double)chordSize));
+        var pattern = scheduler.ChooseMultiPattern(note.TimeSec, endSec, hitCount, available);
+        if (!pattern.IsUsable)
+        {
+            MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s could not build a stable left/right pattern; falling back to free lanes");
+            AddFallbackMulti(note, scheduler, bpm, hitCount, endSec, available);
+            return;
+        }
+
+        int slotCount = pattern.SlotsNeeded(hitCount);
         double fallbackStep = slotCount <= 1 ? 0 : available / (double)(slotCount - 1);
         double bpmStep = ChooseBpmStepSec(bpm);
         double step = fallbackStep >= 0.1 && fallbackStep <= 0.125 ? fallbackStep : Math.Min(0.125, Math.Max(0.1, bpmStep));
@@ -218,17 +248,61 @@ internal static class RuntimeOsuMapBuilder
             if (time > latestTime + 0.0005f)
                 break;
 
-            int count = Math.Min(chordSize, remaining);
-            for (int i = 0; i < count; i++)
+            int[] lanes = pattern.LanesForSlot(slot, remaining);
+            if (!scheduler.AreLanesFreeAt(lanes, time))
             {
-                // multi 姿态启发式：和弦内交替空/地（近似原始 MultiLanes 的混合姿态），具体轨道在阶段2分配。
-                LanePosture posture = (slot + i) % 2 == 0 ? LanePosture.Ground : LanePosture.Air;
-                keys.Add(new KeyDesc(time, time, posture, OsuPlayObjectKind.Multi, slot));
+                MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s pattern lane occupied at {time:F3}s; falling back to free lanes");
+                AddFallbackMulti(note, scheduler, bpm, remaining, endSec, Math.Max(0, latestTime - time), time, slot);
+                return;
             }
 
-            remaining -= count;
+            foreach (int lane in lanes)
+                scheduler.Add(lane, time, time, OsuPlayObjectKind.Multi);
+
+            remaining -= lanes.Length;
             slot++;
         }
+
+        if (remaining > 0)
+            MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s could not place {remaining}/{hitCount} hits without lane overlap");
+    }
+
+    private static void AddFallbackMulti(NoteInfo note, RuntimeLaneScheduler scheduler, float bpm, int hitCount, float endSec, float available, float startSec = -1, int firstSlot = 0)
+    {
+        int chordSize = ChooseMultiChordSize(hitCount, available, scheduler.LaneCount);
+        int slotCount = Math.Max(1, (int)Math.Ceiling(hitCount / (double)chordSize));
+        double fallbackStep = slotCount <= 1 ? 0 : available / (double)(slotCount - 1);
+        double bpmStep = ChooseBpmStepSec(bpm);
+        double step = fallbackStep >= 0.1 && fallbackStep <= 0.125 ? fallbackStep : Math.Min(0.125, Math.Max(0.1, bpmStep));
+        if (slotCount > 1 && step * (slotCount - 1) > available)
+            step = available / (double)(slotCount - 1);
+
+        int remaining = hitCount;
+        int slot = firstSlot;
+        float baseTime = startSec >= 0 ? startSec : note.TimeSec;
+        float latestTime = endSec - MultiEndPaddingSec;
+        while (remaining > 0)
+        {
+            float time = baseTime + (float)(step * (slot - firstSlot));
+            if (time > latestTime + 0.0005f)
+                break;
+
+            int[] lanes = scheduler.ChooseMultiLanes(time, Math.Min(chordSize, remaining), slot);
+            if (lanes.Length == 0)
+            {
+                slot++;
+                continue;
+            }
+
+            foreach (int lane in lanes)
+                scheduler.Add(lane, time, time, OsuPlayObjectKind.Multi);
+
+            remaining -= lanes.Length;
+            slot++;
+        }
+
+        if (remaining > 0)
+            MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s fallback could not place {remaining}/{hitCount} hits without lane overlap");
     }
 
     private static int ChooseMultiChordSize(int hitCount, float availableSec, int laneCount)
@@ -369,31 +443,35 @@ internal static class RuntimeOsuMapBuilder
 
     // ===== 阶段2：根据空地键集合分配轨道 =====
 
-    private static IReadOnlyList<OsuPlayObject> AssignLanes(List<KeyDesc> keys, PlayerConfig config)
+    private static IReadOnlyList<OsuPlayObject> AssignLanes(List<KeyDesc> keys, IReadOnlyList<NoteInfo> multiNotes, float bpm, PlayerConfig config)
     {
         var objects = new List<OsuPlayObject>();
         var scheduler = new RuntimeLaneScheduler(objects, config);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
 
+        // 非 multi 键：逐个分配轨道（multi 姿态标记在这里跳过）
         foreach (var key in keys)
         {
-            int lane;
             if (key.Kind == OsuPlayObjectKind.Multi)
-            {
-                int[] lanes = scheduler.ChooseMultiLanes(key.StartSec, 1, key.MultiSlot);
-                if (lanes.Length == 0)
-                    continue;
-                lane = lanes[0];
-            }
-            else
-            {
-                lane = scheduler.ChooseLane(key.StartSec, key.EndSec, key.Posture);
-            }
+                continue;
 
+            int lane = scheduler.ChooseLane(key.StartSec, key.EndSec, key.Posture);
             scheduler.Add(lane, key.StartSec, key.EndSec, key.Kind);
         }
 
+        // multi 键：批量分配（左右对拍，受 Split 控制）
+        foreach (var multi in multiNotes.OrderBy(n => n.TimeSec))
+        {
+            AddMultiBatch(multi, scheduler, bpm);
+        }
+        MelonLogger.Msg($"[ManiaInMuse] [perf] ChooseLane loop: {sw.ElapsedMilliseconds}ms ({objects.Count} objects)");
+
         if (config.EnableLocalSwapOptimizer)
+        {
+            sw.Restart();
             LocalSwapOptimizer.Optimize(objects, config);
+            MelonLogger.Msg($"[ManiaInMuse] [perf] LocalSwapOptimizer: {sw.ElapsedMilliseconds}ms");
+        }
 
         objects.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
         RemoveExactDuplicates(objects);
@@ -425,10 +503,15 @@ internal static class RuntimeOsuMapBuilder
             if (objects.Count == 0 || config.KeyCount < 2)
                 return;
 
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
             int optimizedRuns = 0;
             var chords = BuildChords(objects, config.OptimizerChordWindowSec);
+            MelonLogger.Msg($"[ManiaInMuse] [perf]     BuildChords: {sw.ElapsedMilliseconds}ms, {chords.Count} chords");
+
             if (chords.Count >= config.OptimizerMinConsecutiveChords)
             {
+                sw.Restart();
                 for (int i = 0; i < chords.Count;)
                 {
                     if (!chords[i].IsTrigger(config))
@@ -456,9 +539,13 @@ internal static class RuntimeOsuMapBuilder
 
                     i = end + 1;
                 }
+                MelonLogger.Msg($"[ManiaInMuse] [perf]     TryOptimizeRun: {sw.ElapsedMilliseconds}ms, {optimizedRuns} run(s)");
             }
 
+            sw.Restart();
             int repairedSegments = config.EnableShortGapRepair ? RepairShortGaps(objects, config) : 0;
+            MelonLogger.Msg($"[ManiaInMuse] [perf]     RepairShortGaps: {sw.ElapsedMilliseconds}ms, {repairedSegments} segment(s)");
+
             if (optimizedRuns > 0)
                 MelonLogger.Msg($"[ManiaInMuse] Local swap optimized {optimizedRuns} dense chord run(s)");
             if (repairedSegments > 0)
@@ -801,17 +888,24 @@ internal static class RuntimeOsuMapBuilder
 
         private static int RepairShortGaps(List<OsuPlayObject> objects, PlayerConfig config)
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var windows = FindShortGapWindows(objects, config);
+            MelonLogger.Msg($"[ManiaInMuse] [perf]       FindShortGapWindows: {sw.ElapsedMilliseconds}ms, {windows.Count} windows");
             if (windows.Count == 0)
                 return 0;
 
+            sw.Restart();
             var segments = BuildRepairSegments(objects, windows, config);
+            MelonLogger.Msg($"[ManiaInMuse] [perf]       BuildRepairSegments: {sw.ElapsedMilliseconds}ms, {segments.Count} segments");
+
+            sw.Restart();
             int repaired = 0;
             foreach (var segment in segments)
             {
                 if (TryRepairShortGapSegment(objects, segment, config))
                     repaired++;
             }
+            MelonLogger.Msg($"[ManiaInMuse] [perf]       TryRepairShortGapSegment: {sw.ElapsedMilliseconds}ms, {repaired} repaired");
 
             return repaired;
         }

@@ -436,12 +436,13 @@ internal static class ManiaConverter
     internal static BeatmapModel Convert(IReadOnlyList<CsvNote> notes, GeneratorOptions options)
     {
         var result = new BeatmapModel();
+        var multiNotes = notes.Where(n => n.Type == 8).ToList();
 
         // 阶段1：构建空地键集合（只定姿态，不分轨道）
         var keys = BuildKeyCollection(notes, options.Bpm);
 
         // 阶段2：根据集合分配轨道 + 换轨优化
-        result.Objects.AddRange(AssignLanes(keys, options.Bpm));
+        result.Objects.AddRange(AssignLanes(keys, multiNotes, options.Bpm));
 
         SortObjects(result.Objects);
         OptimizeShortGaps(result.Objects);
@@ -484,7 +485,7 @@ internal static class ManiaConverter
                     keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, DecideBossPosture(keys, note.TimeMs), ObjectReason.Boss));
                     break;
                 case 8:
-                    AddMultiKeys(keys, note, bpm);
+                    AddMultiMarker(keys, note);
                     break;
             }
         }
@@ -589,14 +590,22 @@ internal static class ManiaConverter
         return ground > air ? Posture.Air : Posture.Ground;
     }
 
-    private static void AddMultiKeys(List<KeyDesc> keys, CsvNote note, double bpm)
+    // 阶段1：multi 结束后立即处于地面，只记录一个地面姿态标记（用于姿态模拟）。
+    private static void AddMultiMarker(List<KeyDesc> keys, CsvNote note)
+    {
+        int end = note.EndTimeMs > note.TimeMs ? note.EndTimeMs : note.TimeMs + Math.Max(note.MultiDurationMs, 0);
+        keys.Add(new KeyDesc(end, end, Posture.Ground, ObjectReason.Multi));
+    }
+
+    // 阶段2：批量分配 multi 轨道（原始 MultiLanes 固定映射）。
+    private static void AddMultiBatch(CsvNote note, LaneScheduler scheduler, double bpm)
     {
         int hitCount = Math.Max(1, note.MultiMaxHitCount);
         int end = note.EndTimeMs > note.TimeMs ? note.EndTimeMs : note.TimeMs + Math.Max(note.MultiDurationMs, 0);
         int available = Math.Max(0, end - note.TimeMs - MultiEndPaddingMs);
         if (available <= 0 || hitCount == 1)
         {
-            keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, Posture.Air, ObjectReason.Multi, 0));
+            scheduler.Add(3, note.TimeMs, note.TimeMs, ObjectReason.Multi);
             return;
         }
 
@@ -614,12 +623,8 @@ internal static class ManiaConverter
             int time = note.TimeMs + (int)Math.Round(step * slot, MidpointRounding.AwayFromZero);
             time = Math.Min(time, end - MultiEndPaddingMs);
             int count = Math.Min(chordSize, remaining);
-            for (int i = 0; i < count; i++)
-            {
-                // multi 姿态启发式：和弦内交替空/地（近似原始 MultiLanes 的混合姿态），具体轨道在阶段2分配。
-                Posture posture = (slot + i) % 2 == 0 ? Posture.Ground : Posture.Air;
-                keys.Add(new KeyDesc(time, time, posture, ObjectReason.Multi, slot));
-            }
+            foreach (int lane in MultiLanes(count, slot))
+                scheduler.Add(lane, time, time, ObjectReason.Multi);
             remaining -= count;
         }
     }
@@ -774,15 +779,25 @@ internal static class ManiaConverter
 
     // ===== 阶段2：根据空地键集合分配轨道 =====
 
-    private static List<ManiaObject> AssignLanes(List<KeyDesc> keys, double bpm)
+    private static List<ManiaObject> AssignLanes(List<KeyDesc> keys, IReadOnlyList<CsvNote> multiNotes, double bpm)
     {
         var objects = new List<ManiaObject>();
         var scheduler = new LaneScheduler(objects, bpm);
 
+        // 非 multi 键：逐个分配轨道（multi 姿态标记在这里跳过）
         foreach (var key in keys)
         {
+            if (key.Reason == ObjectReason.Multi)
+                continue;
+
             int lane = scheduler.ChooseLane(key.StartMs, key.EndMs, key.Posture, boss: false);
             scheduler.Add(lane, key.StartMs, key.EndMs, key.Reason);
+        }
+
+        // multi 键：批量分配（MultiLanes 固定映射）
+        foreach (var multi in multiNotes.OrderBy(n => n.TimeMs).ThenBy(n => n.Index))
+        {
+            AddMultiBatch(multi, scheduler, bpm);
         }
 
         return objects;
