@@ -301,7 +301,8 @@ internal readonly struct OsuPlayObject
     }
 
     internal bool IsLocalSwapCandidate => !IsHold && (Kind is OsuPlayObjectKind.RegularTap or OsuPlayObjectKind.BossTap);
-    internal bool AllowsAnyPosture => Kind == OsuPlayObjectKind.BossTap;
+    // boss 姿态已在阶段1（构建空地键集合）决定，换轨优化器不再跨姿态移动。
+    internal bool AllowsAnyPosture => false;
 
     internal OsuPlayObject WithLane(int lane)
     {

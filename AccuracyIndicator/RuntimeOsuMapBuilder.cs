@@ -19,12 +19,44 @@ internal static class RuntimeOsuMapBuilder
     private const float BlockWindowSec = 0.12f;
     private const float MultiEndPaddingSec = 0.08f;
 
+    // 阶段1的空地键描述：只含姿态（空/地）与时间，不含具体轨道。轨道在阶段2分配。
+    private readonly struct KeyDesc
+    {
+        internal readonly float StartSec;
+        internal readonly float EndSec;
+        internal readonly LanePosture Posture;
+        internal readonly OsuPlayObjectKind Kind;
+        internal readonly int MultiSlot;
+
+        internal KeyDesc(float startSec, float endSec, LanePosture posture, OsuPlayObjectKind kind, int multiSlot = -1)
+        {
+            StartSec = startSec;
+            EndSec = Math.Max(startSec, endSec);
+            Posture = posture;
+            Kind = kind;
+            MultiSlot = multiSlot;
+        }
+
+        internal bool IsHold => EndSec > StartSec;
+    }
+
     internal static IReadOnlyList<OsuPlayObject> Build(IReadOnlyList<NoteInfo> notes, float bpm, PlayerConfig config)
     {
-        var objects = new List<OsuPlayObject>();
-        var scheduler = new RuntimeLaneScheduler(objects, config);
+        // 阶段1：构建空地键集合（只定姿态与时间，不分配轨道）
+        var keys = BuildKeyCollection(notes, bpm, config);
+
+        // 阶段2：根据集合分配轨道
+        return AssignLanes(keys, config);
+    }
+
+    // ===== 阶段1：构建空地键集合（只定姿态，不分轨道） =====
+
+    private static List<KeyDesc> BuildKeyCollection(IReadOnlyList<NoteInfo> notes, float bpm, PlayerConfig config)
+    {
+        var keys = new List<KeyDesc>();
         var multiNotes = notes.Where(n => n.Type == 8).ToList();
 
+        // 怪物/幽灵/长按/boss/multi：姿态来自谱面数据（boss 用平衡启发式，multi 用交替启发式）
         foreach (var note in notes.OrderBy(n => n.TimeSec))
         {
             if (note.Type != 8 && IsInsideMulti(note, multiNotes))
@@ -34,40 +66,116 @@ internal static class RuntimeOsuMapBuilder
             {
                 case 1:
                 case 4:
-                    AddTap(note.TimeSec, note.IsAir ? LanePosture.Air : LanePosture.Ground, scheduler, boss: false, OsuPlayObjectKind.RegularTap);
+                    keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, note.IsAir ? LanePosture.Air : LanePosture.Ground, OsuPlayObjectKind.RegularTap));
                     break;
                 case 3:
                     if (note.EndTimeSec > note.TimeSec)
-                        AddHold(note.TimeSec, note.EndTimeSec, note.IsAir ? LanePosture.Air : LanePosture.Ground, scheduler);
+                        keys.Add(new KeyDesc(note.TimeSec, note.EndTimeSec, note.IsAir ? LanePosture.Air : LanePosture.Ground, OsuPlayObjectKind.Hold));
                     break;
                 case 5:
-                    AddTap(note.TimeSec, LanePosture.Ground, scheduler, boss: true, OsuPlayObjectKind.BossTap);
+                    keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, DecideBossPosture(keys, note.TimeSec), OsuPlayObjectKind.BossTap));
                     break;
                 case 8:
-                    AddMulti(note, scheduler, bpm);
+                    AddMultiKeys(keys, note, bpm, config);
                     break;
             }
         }
 
-        if (config.EnableLocalSwapOptimizer)
-            LocalSwapOptimizer.Optimize(objects, config);
+        // 齿轮落地修复：提前落地 + 重新起跳
+        PlanGearLandings(keys, notes, multiNotes);
 
-        PlanGearLandings(notes, multiNotes, objects, scheduler, config);
-
+        // 障碍/音符：按姿态模拟补键
         foreach (var note in notes.Where(n => n.Type is 2 or 7).OrderBy(n => n.TimeSec))
         {
             if (IsInsideMulti(note, multiNotes))
                 continue;
 
             if (note.Type == 7)
-                EnsureMusicCollected(note, scheduler);
+                EnsureMusicCollected(keys, note);
             else
-                EnsureBlockDodged(note, scheduler);
+                EnsureBlockDodged(keys, note);
         }
 
-        objects.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
-        RemoveExactDuplicates(objects);
-        return objects;
+        keys.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
+        return keys;
+    }
+
+    // 姿态模拟：只追踪姿态序列（空/地），不看具体轨道。
+    private static LanePosture PostureAt(List<KeyDesc> keys, float timeSec)
+    {
+        int lastTimeCompare = int.MinValue;
+        float lastTime = float.MinValue;
+        bool airAtLastTime = false;
+        bool groundAtLastTime = false;
+
+        foreach (var key in keys)
+        {
+            if (key.IsHold && key.StartSec <= timeSec && key.EndSec >= timeSec)
+                return key.Posture;
+
+            if (key.StartSec > timeSec)
+                continue;
+
+            int timeCompare = (int)Math.Round(key.StartSec * 1000f);
+            if (timeCompare > lastTimeCompare)
+            {
+                lastTimeCompare = timeCompare;
+                lastTime = key.StartSec;
+                airAtLastTime = false;
+                groundAtLastTime = false;
+            }
+
+            if (timeCompare == lastTimeCompare)
+            {
+                if (key.Posture == LanePosture.Air)
+                    airAtLastTime = true;
+                else
+                    groundAtLastTime = true;
+            }
+        }
+
+        if (lastTimeCompare == int.MinValue)
+            return LanePosture.Ground;
+        if (groundAtLastTime)
+            return LanePosture.Ground;
+        if (airAtLastTime && timeSec <= lastTime + AirHoldSec)
+            return LanePosture.Air;
+
+        return LanePosture.Ground;
+    }
+
+    private static bool IsPostureSatisfied(List<KeyDesc> keys, float timeSec, LanePosture target, float windowSec)
+    {
+        return PostureAt(keys, timeSec - windowSec) == target
+            || PostureAt(keys, timeSec) == target
+            || PostureAt(keys, timeSec + windowSec) == target;
+    }
+
+    private static bool IsPostureUnsafe(List<KeyDesc> keys, float timeSec, LanePosture unsafePosture, float windowSec)
+    {
+        return PostureAt(keys, timeSec - windowSec) == unsafePosture
+            || PostureAt(keys, timeSec) == unsafePosture
+            || PostureAt(keys, timeSec + windowSec) == unsafePosture;
+    }
+
+    // boss 可以空/地任选，阶段1用平衡启发式决定其姿态，阶段2再落到具体轨道。
+    private static LanePosture DecideBossPosture(List<KeyDesc> keys, float timeSec)
+    {
+        int air = 0;
+        int ground = 0;
+        float begin = timeSec - BalanceWindowSec;
+        foreach (var key in keys)
+        {
+            if (key.StartSec < begin || key.StartSec > timeSec)
+                continue;
+
+            if (key.Posture == LanePosture.Air)
+                air++;
+            else
+                ground++;
+        }
+
+        return ground > air ? LanePosture.Air : LanePosture.Ground;
     }
 
     private static bool IsInsideMulti(NoteInfo note, IReadOnlyList<NoteInfo> multiNotes)
@@ -82,39 +190,19 @@ internal static class RuntimeOsuMapBuilder
         return false;
     }
 
-    private static void AddTap(float timeSec, LanePosture posture, RuntimeLaneScheduler scheduler, bool boss, OsuPlayObjectKind kind)
-    {
-        int lane = scheduler.ChooseLane(timeSec, timeSec, posture, boss);
-        scheduler.Add(lane, timeSec, timeSec, kind);
-    }
-
-    private static void AddHold(float startSec, float endSec, LanePosture posture, RuntimeLaneScheduler scheduler)
-    {
-        int lane = scheduler.ChooseLane(startSec, endSec, posture, boss: false);
-        scheduler.Add(lane, startSec, endSec, OsuPlayObjectKind.Hold);
-    }
-
-    private static void AddMulti(NoteInfo note, RuntimeLaneScheduler scheduler, float bpm)
+    private static void AddMultiKeys(List<KeyDesc> keys, NoteInfo note, float bpm, PlayerConfig config)
     {
         int hitCount = Math.Max(1, note.MultiMaxHitCount);
         float endSec = note.EndTimeSec > note.TimeSec ? note.EndTimeSec : note.TimeSec + Math.Max(note.MultiDurationSec, 0);
         float available = Math.Max(0, endSec - note.TimeSec - MultiEndPaddingSec);
         if (available <= 0 || hitCount == 1)
         {
-            foreach (int lane in scheduler.ChooseMultiLanes(note.TimeSec, 1, 0))
-                scheduler.Add(lane, note.TimeSec, note.TimeSec, OsuPlayObjectKind.Multi);
+            keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, LanePosture.Air, OsuPlayObjectKind.Multi, 0));
             return;
         }
 
-        var pattern = scheduler.ChooseMultiPattern(note.TimeSec, endSec, hitCount, available);
-        if (!pattern.IsUsable)
-        {
-            MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s could not build a stable left/right pattern; falling back to free lanes");
-            AddFallbackMulti(note, scheduler, bpm, hitCount, endSec, available);
-            return;
-        }
-
-        int slotCount = pattern.SlotsNeeded(hitCount);
+        int chordSize = ChooseMultiChordSize(hitCount, available, config.KeyCount);
+        int slotCount = Math.Max(1, (int)Math.Ceiling(hitCount / (double)chordSize));
         double fallbackStep = slotCount <= 1 ? 0 : available / (double)(slotCount - 1);
         double bpmStep = ChooseBpmStepSec(bpm);
         double step = fallbackStep >= 0.1 && fallbackStep <= 0.125 ? fallbackStep : Math.Min(0.125, Math.Max(0.1, bpmStep));
@@ -130,61 +218,17 @@ internal static class RuntimeOsuMapBuilder
             if (time > latestTime + 0.0005f)
                 break;
 
-            int[] lanes = pattern.LanesForSlot(slot, remaining);
-            if (!scheduler.AreLanesFreeAt(lanes, time))
+            int count = Math.Min(chordSize, remaining);
+            for (int i = 0; i < count; i++)
             {
-                MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s pattern lane occupied at {time:F3}s; falling back to free lanes");
-                AddFallbackMulti(note, scheduler, bpm, remaining, endSec, Math.Max(0, latestTime - time), time, slot);
-                return;
+                // multi 姿态启发式：和弦内交替空/地（近似原始 MultiLanes 的混合姿态），具体轨道在阶段2分配。
+                LanePosture posture = (slot + i) % 2 == 0 ? LanePosture.Ground : LanePosture.Air;
+                keys.Add(new KeyDesc(time, time, posture, OsuPlayObjectKind.Multi, slot));
             }
 
-            foreach (int lane in lanes)
-                scheduler.Add(lane, time, time, OsuPlayObjectKind.Multi);
-
-            remaining -= lanes.Length;
+            remaining -= count;
             slot++;
         }
-
-        if (remaining > 0)
-            MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s could not place {remaining}/{hitCount} hits without lane overlap");
-    }
-
-    private static void AddFallbackMulti(NoteInfo note, RuntimeLaneScheduler scheduler, float bpm, int hitCount, float endSec, float available, float startSec = -1, int firstSlot = 0)
-    {
-        int chordSize = ChooseMultiChordSize(hitCount, available, scheduler.LaneCount);
-        int slotCount = Math.Max(1, (int)Math.Ceiling(hitCount / (double)chordSize));
-        double fallbackStep = slotCount <= 1 ? 0 : available / (double)(slotCount - 1);
-        double bpmStep = ChooseBpmStepSec(bpm);
-        double step = fallbackStep >= 0.1 && fallbackStep <= 0.125 ? fallbackStep : Math.Min(0.125, Math.Max(0.1, bpmStep));
-        if (slotCount > 1 && step * (slotCount - 1) > available)
-            step = available / (double)(slotCount - 1);
-
-        int remaining = hitCount;
-        int slot = firstSlot;
-        float baseTime = startSec >= 0 ? startSec : note.TimeSec;
-        float latestTime = endSec - MultiEndPaddingSec;
-        while (remaining > 0)
-        {
-            float time = baseTime + (float)(step * (slot - firstSlot));
-            if (time > latestTime + 0.0005f)
-                break;
-
-            int[] lanes = scheduler.ChooseMultiLanes(time, Math.Min(chordSize, remaining), slot);
-            if (lanes.Length == 0)
-            {
-                slot++;
-                continue;
-            }
-
-            foreach (int lane in lanes)
-                scheduler.Add(lane, time, time, OsuPlayObjectKind.Multi);
-
-            remaining -= lanes.Length;
-            slot++;
-        }
-
-        if (remaining > 0)
-            MelonLogger.Warning($"[ManiaInMuse] Multi at {note.TimeSec:F3}s fallback could not place {remaining}/{hitCount} hits without lane overlap");
     }
 
     private static int ChooseMultiChordSize(int hitCount, float availableSec, int laneCount)
@@ -212,51 +256,47 @@ internal static class RuntimeOsuMapBuilder
         return 0.125;
     }
 
-    private static void EnsureMusicCollected(NoteInfo note, RuntimeLaneScheduler scheduler)
+    private static void EnsureMusicCollected(List<KeyDesc> keys, NoteInfo note)
     {
         LanePosture target = note.IsAir ? LanePosture.Air : LanePosture.Ground;
-        if (scheduler.IsPostureSatisfied(note.TimeSec, target, MusicWindowSec))
+        if (IsPostureSatisfied(keys, note.TimeSec, target, MusicWindowSec))
             return;
 
-        AddTap(note.TimeSec, target, scheduler, boss: false, OsuPlayObjectKind.UtilityTap);
+        keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, target, OsuPlayObjectKind.UtilityTap));
     }
 
-    private static void EnsureBlockDodged(NoteInfo note, RuntimeLaneScheduler scheduler)
+    private static void EnsureBlockDodged(List<KeyDesc> keys, NoteInfo note)
     {
         LanePosture unsafePosture = note.IsAir ? LanePosture.Air : LanePosture.Ground;
         LanePosture safePosture = unsafePosture == LanePosture.Air ? LanePosture.Ground : LanePosture.Air;
 
-        if (scheduler.IsPostureSatisfied(note.TimeSec, safePosture, BlockWindowSec))
+        if (IsPostureSatisfied(keys, note.TimeSec, safePosture, BlockWindowSec))
             return;
-        if (!scheduler.IsPostureUnsafe(note.TimeSec, unsafePosture, BlockWindowSec))
+        if (!IsPostureUnsafe(keys, note.TimeSec, unsafePosture, BlockWindowSec))
             return;
 
-        AddTap(note.TimeSec, safePosture, scheduler, boss: false, OsuPlayObjectKind.UtilityTap);
+        keys.Add(new KeyDesc(note.TimeSec, note.TimeSec, safePosture, OsuPlayObjectKind.UtilityTap));
     }
 
-    // 姿态规划 pass：修复"地面高度齿轮（block type 2, IsAir==false）"在自然落地边界漏掉重新起跳键的问题。
-    // 原理：不依赖 500ms 自然落地时刻，而是在危险窗口 [GearRiskLowSec, GearRiskHighSec] 内显式插入
-    // 一次"提前落地"（地面 tap）+ 一次"重新起跳"（空中 tap，放在齿轮同时）。落地/起跳后姿态由显式
-    // 事件决定，与真实滞空是 450/500/550ms 无关。
+    // 齿轮落地修复（阶段1版）：只插入键（姿态），不分配轨道。
+    // 原理：在危险窗口 [GearRiskLowSec, GearRiskHighSec] 内显式插入"提前落地"（地面）+
+    // "重新起跳"（空中，放在齿轮同时），让落地/起跳由显式事件决定。
     private static void PlanGearLandings(
+        List<KeyDesc> keys,
         IReadOnlyList<NoteInfo> notes,
-        IReadOnlyList<NoteInfo> multiNotes,
-        List<OsuPlayObject> objects,
-        RuntimeLaneScheduler scheduler,
-        PlayerConfig config)
+        IReadOnlyList<NoteInfo> multiNotes)
     {
         // 地面点击的时刻（按毫秒分组），用于识别"天地双押"：同一时刻既有空中键又有地面键，
         // 结果是地面状态而非起跳。
-        var groundTapMs = new HashSet<int>(objects
-            .Where(o => !o.IsHold && !config.IsAirLane(o.Lane))
-            .Select(o => (int)Math.Round(o.StartSec * 1000f)));
+        var groundTapMs = new HashSet<int>(keys
+            .Where(k => !k.IsHold && k.Posture == LanePosture.Ground)
+            .Select(k => (int)Math.Round(k.StartSec * 1000f)));
 
-        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap（pass1 的空中 monster/ghost/boss），
-        // 排除与地面键同刻的（天地双押）。必须在优化器之后取，因为 boss 可能被换到任意姿态轨。
-        var jumps = objects
-            .Where(o => !o.IsHold && config.IsAirLane(o.Lane))
-            .Where(o => !groundTapMs.Contains((int)Math.Round(o.StartSec * 1000f)))
-            .Select(o => o.StartSec)
+        // 起跳事件 = 所有空中 tap，排除与地面键同刻的（天地双押）。
+        var jumps = keys
+            .Where(k => !k.IsHold && k.Posture == LanePosture.Air)
+            .Where(k => !groundTapMs.Contains((int)Math.Round(k.StartSec * 1000f)))
+            .Select(k => k.StartSec)
             .OrderBy(t => t)
             .ToList();
         int jumpIndex = 0;
@@ -290,8 +330,7 @@ internal static class RuntimeOsuMapBuilder
 
             if (currentJump < 0f)
             {
-                // 首个齿轮：pass2 的 EnsureBlockDodged 会在 t 处插入空中键起跳，这里预判推进，
-                // 避免后续齿轮把"第一个齿轮的起跳"误判成"仍然没有起跳"。
+                // 首个齿轮：EnsureBlockDodged 会在 t 处插入空中键起跳，这里预判推进。
                 currentJump = t;
                 continue;
             }
@@ -321,14 +360,44 @@ internal static class RuntimeOsuMapBuilder
             if (tj - tg < 0.001f)
                 tg = tj - 0.001f;
 
-            int groundLane = scheduler.ChooseLane(tg, tg, LanePosture.Ground, boss: false);
-            scheduler.Add(groundLane, tg, tg, OsuPlayObjectKind.UtilityTap);
-
-            int airLane = scheduler.ChooseLane(tj, tj, LanePosture.Air, boss: false);
-            scheduler.Add(airLane, tj, tj, OsuPlayObjectKind.UtilityTap);
+            keys.Add(new KeyDesc(tg, tg, LanePosture.Ground, OsuPlayObjectKind.UtilityTap));
+            keys.Add(new KeyDesc(tj, tj, LanePosture.Air, OsuPlayObjectKind.UtilityTap));
 
             currentJump = tj;
         }
+    }
+
+    // ===== 阶段2：根据空地键集合分配轨道 =====
+
+    private static IReadOnlyList<OsuPlayObject> AssignLanes(List<KeyDesc> keys, PlayerConfig config)
+    {
+        var objects = new List<OsuPlayObject>();
+        var scheduler = new RuntimeLaneScheduler(objects, config);
+
+        foreach (var key in keys)
+        {
+            int lane;
+            if (key.Kind == OsuPlayObjectKind.Multi)
+            {
+                int[] lanes = scheduler.ChooseMultiLanes(key.StartSec, 1, key.MultiSlot);
+                if (lanes.Length == 0)
+                    continue;
+                lane = lanes[0];
+            }
+            else
+            {
+                lane = scheduler.ChooseLane(key.StartSec, key.EndSec, key.Posture);
+            }
+
+            scheduler.Add(lane, key.StartSec, key.EndSec, key.Kind);
+        }
+
+        if (config.EnableLocalSwapOptimizer)
+            LocalSwapOptimizer.Optimize(objects, config);
+
+        objects.Sort((a, b) => a.StartSec.CompareTo(b.StartSec));
+        RemoveExactDuplicates(objects);
+        return objects;
     }
 
     private static void RemoveExactDuplicates(List<OsuPlayObject> objects)
@@ -1367,9 +1436,9 @@ internal static class RuntimeOsuMapBuilder
             _objects.Add(new OsuPlayObject(lane, startSec, Math.Max(startSec, endSec), endSec > startSec, kind));
         }
 
-        internal int ChooseLane(float startSec, float endSec, LanePosture posture, bool boss)
+        internal int ChooseLane(float startSec, float endSec, LanePosture posture)
         {
-            int[] lanes = boss ? _config.AllLaneIndexes : _config.LaneIndexesFor(posture);
+            int[] lanes = _config.LaneIndexesFor(posture);
             if (lanes.Length == 0)
                 lanes = _config.AllLaneIndexes;
 
@@ -1527,20 +1596,6 @@ internal static class RuntimeOsuMapBuilder
             return gapScore + usedLaneScore - spreadPenalty;
         }
 
-        internal bool IsPostureSatisfied(float timeSec, LanePosture target, float windowSec)
-        {
-            return PostureAt(timeSec - windowSec) == target
-                || PostureAt(timeSec) == target
-                || PostureAt(timeSec + windowSec) == target;
-        }
-
-        internal bool IsPostureUnsafe(float timeSec, LanePosture unsafePosture, float windowSec)
-        {
-            return PostureAt(timeSec - windowSec) == unsafePosture
-                || PostureAt(timeSec) == unsafePosture
-                || PostureAt(timeSec + windowSec) == unsafePosture;
-        }
-
         private bool HasObjectAt(int lane, float timeSec)
         {
             return _objects.Any(o => o.Lane == lane && Math.Abs(o.StartSec - timeSec) < 0.0005f);
@@ -1590,49 +1645,6 @@ internal static class RuntimeOsuMapBuilder
             return (left > right && !laneIsLeft) || (right > left && laneIsLeft)
                 ? diff * 0.08
                 : -diff * 0.08;
-        }
-
-        private LanePosture PostureAt(float timeSec)
-        {
-            int lastTimeCompare = int.MinValue;
-            float lastTime = float.MinValue;
-            bool airAtLastTime = false;
-            bool groundAtLastTime = false;
-
-            foreach (var obj in _objects)
-            {
-                if (obj.IsHold && obj.StartSec <= timeSec && obj.EndSec >= timeSec)
-                    return _config.IsAirLane(obj.Lane) ? LanePosture.Air : LanePosture.Ground;
-
-                if (obj.StartSec > timeSec)
-                    continue;
-
-                int timeCompare = (int)Math.Round(obj.StartSec * 1000f);
-                if (timeCompare > lastTimeCompare)
-                {
-                    lastTimeCompare = timeCompare;
-                    lastTime = obj.StartSec;
-                    airAtLastTime = false;
-                    groundAtLastTime = false;
-                }
-
-                if (timeCompare == lastTimeCompare)
-                {
-                    if (_config.IsAirLane(obj.Lane))
-                        airAtLastTime = true;
-                    else
-                        groundAtLastTime = true;
-                }
-            }
-
-            if (lastTimeCompare == int.MinValue)
-                return LanePosture.Ground;
-            if (groundAtLastTime)
-                return LanePosture.Ground;
-            if (airAtLastTime && timeSec <= lastTime + AirHoldSec)
-                return LanePosture.Air;
-
-            return LanePosture.Ground;
         }
     }
 }

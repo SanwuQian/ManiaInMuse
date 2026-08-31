@@ -412,48 +412,36 @@ internal static class ManiaConverter
     private static readonly int[] GroundLanes = [3, 4, 6];
     private static readonly int[] AllLanes = [1, 2, 3, 4, 5, 6];
 
+    // 阶段1的空地键描述：只含姿态与时间，不含具体轨道。轨道在阶段2分配。
+    private readonly struct KeyDesc
+    {
+        internal readonly int StartMs;
+        internal readonly int EndMs;
+        internal readonly Posture Posture;
+        internal readonly ObjectReason Reason;
+        internal readonly int MultiSlot;
+
+        internal KeyDesc(int startMs, int endMs, Posture posture, ObjectReason reason, int multiSlot = -1)
+        {
+            StartMs = startMs;
+            EndMs = Math.Max(startMs, endMs);
+            Posture = posture;
+            Reason = reason;
+            MultiSlot = multiSlot;
+        }
+
+        internal bool IsHold => EndMs > StartMs;
+    }
+
     internal static BeatmapModel Convert(IReadOnlyList<CsvNote> notes, GeneratorOptions options)
     {
         var result = new BeatmapModel();
-        var multiNotes = notes.Where(n => n.Type == 8).ToList();
-        var scheduler = new LaneScheduler(result.Objects, options.Bpm);
 
-        foreach (var note in notes)
-        {
-            if (note.Type != 8 && note.IsInside(multiNotes))
-                continue;
+        // 阶段1：构建空地键集合（只定姿态，不分轨道）
+        var keys = BuildKeyCollection(notes, options.Bpm);
 
-            switch (note.Type)
-            {
-                case 1:
-                case 4:
-                    AddActiveTap(note, note.IsAir ? Posture.Air : Posture.Ground, scheduler, ObjectReason.Active);
-                    break;
-                case 3:
-                    if (HasDuration(note))
-                        AddHold(note, note.IsAir ? Posture.Air : Posture.Ground, scheduler);
-                    break;
-                case 5:
-                    AddBoss(note, scheduler);
-                    break;
-                case 8:
-                    AddMulti(note, scheduler, options.Bpm);
-                    break;
-            }
-        }
-
-        PlanGearLandings(notes, multiNotes, result.Objects, scheduler);
-
-        foreach (var note in notes.Where(n => n.Type is 2 or 7).OrderBy(n => n.TimeMs).ThenBy(n => n.Index))
-        {
-            if (note.IsInside(multiNotes))
-                continue;
-
-            if (note.Type == 7)
-                EnsureMusicCollected(note, scheduler);
-            else
-                EnsureBlockDodged(note, scheduler);
-        }
+        // 阶段2：根据集合分配轨道 + 换轨优化
+        result.Objects.AddRange(AssignLanes(keys, options.Bpm));
 
         SortObjects(result.Objects);
         OptimizeShortGaps(result.Objects);
@@ -464,10 +452,62 @@ internal static class ManiaConverter
         return result;
     }
 
-    private static void AddActiveTap(CsvNote note, Posture posture, LaneScheduler scheduler, ObjectReason reason)
+    // ===== 阶段1：构建空地键集合（只定姿态，不分轨道） =====
+
+    private static List<KeyDesc> BuildKeyCollection(IReadOnlyList<CsvNote> notes, double bpm)
     {
-        int lane = scheduler.ChooseLane(note.TimeMs, note.TimeMs, posture, boss: false);
-        scheduler.Add(lane, note.TimeMs, note.TimeMs, reason);
+        var keys = new List<KeyDesc>();
+        var multiNotes = notes.Where(n => n.Type == 8).ToList();
+
+        foreach (var note in notes)
+        {
+            if (note.Type != 8 && note.IsInside(multiNotes))
+                continue;
+
+            switch (note.Type)
+            {
+                case 1:
+                case 4:
+                    keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, note.IsAir ? Posture.Air : Posture.Ground, ObjectReason.Active));
+                    break;
+                case 3:
+                    if (HasDuration(note))
+                    {
+                        int end = note.EndTimeMs > note.TimeMs ? note.EndTimeMs : note.TimeMs + Math.Max(0, note.LengthMs);
+                        if (end <= note.TimeMs)
+                            keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, note.IsAir ? Posture.Air : Posture.Ground, ObjectReason.Active));
+                        else
+                            keys.Add(new KeyDesc(note.TimeMs, end, note.IsAir ? Posture.Air : Posture.Ground, ObjectReason.Hold));
+                    }
+                    break;
+                case 5:
+                    keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, DecideBossPosture(keys, note.TimeMs), ObjectReason.Boss));
+                    break;
+                case 8:
+                    AddMultiKeys(keys, note, bpm);
+                    break;
+            }
+        }
+
+        PlanGearLandings(keys, notes, multiNotes);
+
+        foreach (var note in notes.Where(n => n.Type is 2 or 7).OrderBy(n => n.TimeMs).ThenBy(n => n.Index))
+        {
+            if (note.IsInside(multiNotes))
+                continue;
+
+            if (note.Type == 7)
+                EnsureMusicCollected(keys, note);
+            else
+                EnsureBlockDodged(keys, note);
+        }
+
+        keys.Sort((a, b) =>
+        {
+            int timeCompare = a.StartMs.CompareTo(b.StartMs);
+            return timeCompare != 0 ? timeCompare : a.Posture.CompareTo(b.Posture);
+        });
+        return keys;
     }
 
     private static bool HasDuration(CsvNote note)
@@ -475,33 +515,88 @@ internal static class ManiaConverter
         return note.EndTimeMs > note.TimeMs || note.LengthMs > 0;
     }
 
-    private static void AddHold(CsvNote note, Posture posture, LaneScheduler scheduler)
+    // 姿态模拟：只追踪姿态序列，不看具体轨道。
+    private static Posture PostureAt(List<KeyDesc> keys, int timeMs)
     {
-        int end = note.EndTimeMs > note.TimeMs ? note.EndTimeMs : note.TimeMs + Math.Max(0, note.LengthMs);
-        if (end <= note.TimeMs)
+        int lastTime = int.MinValue;
+        bool airAtLastTime = false;
+        bool groundAtLastTime = false;
+
+        foreach (var key in keys)
         {
-            AddActiveTap(note, posture, scheduler, ObjectReason.Active);
-            return;
+            if (key.IsHold && key.StartMs <= timeMs && key.EndMs >= timeMs)
+                return key.Posture;
+
+            if (key.StartMs > timeMs)
+                continue;
+
+            if (key.StartMs > lastTime)
+            {
+                lastTime = key.StartMs;
+                airAtLastTime = false;
+                groundAtLastTime = false;
+            }
+
+            if (key.StartMs == lastTime)
+            {
+                if (key.Posture == Posture.Air)
+                    airAtLastTime = true;
+                else
+                    groundAtLastTime = true;
+            }
         }
 
-        int lane = scheduler.ChooseLane(note.TimeMs, end, posture, boss: false);
-        scheduler.Add(lane, note.TimeMs, end, ObjectReason.Hold);
+        if (lastTime == int.MinValue)
+            return Posture.Ground;
+        if (groundAtLastTime)
+            return Posture.Ground;
+        if (airAtLastTime && timeMs <= lastTime + AirHoldMs)
+            return Posture.Air;
+
+        return Posture.Ground;
     }
 
-    private static void AddBoss(CsvNote note, LaneScheduler scheduler)
+    private static bool IsPostureSatisfied(List<KeyDesc> keys, int timeMs, Posture target, int windowMs)
     {
-        int lane = scheduler.ChooseLane(note.TimeMs, note.TimeMs, Posture.Ground, boss: true);
-        scheduler.Add(lane, note.TimeMs, note.TimeMs, ObjectReason.Boss);
+        return PostureAt(keys, timeMs - windowMs) == target
+            || PostureAt(keys, timeMs) == target
+            || PostureAt(keys, timeMs + windowMs) == target;
     }
 
-    private static void AddMulti(CsvNote note, LaneScheduler scheduler, double bpm)
+    private static bool IsPostureUnsafe(List<KeyDesc> keys, int timeMs, Posture unsafePosture, int windowMs)
+    {
+        return PostureAt(keys, timeMs - windowMs) == unsafePosture
+            || PostureAt(keys, timeMs) == unsafePosture
+            || PostureAt(keys, timeMs + windowMs) == unsafePosture;
+    }
+
+    private static Posture DecideBossPosture(List<KeyDesc> keys, int timeMs)
+    {
+        int air = 0;
+        int ground = 0;
+        int begin = timeMs - BalanceWindowMs;
+        foreach (var key in keys)
+        {
+            if (key.StartMs < begin || key.StartMs > timeMs)
+                continue;
+
+            if (key.Posture == Posture.Air)
+                air++;
+            else
+                ground++;
+        }
+
+        return ground > air ? Posture.Air : Posture.Ground;
+    }
+
+    private static void AddMultiKeys(List<KeyDesc> keys, CsvNote note, double bpm)
     {
         int hitCount = Math.Max(1, note.MultiMaxHitCount);
         int end = note.EndTimeMs > note.TimeMs ? note.EndTimeMs : note.TimeMs + Math.Max(note.MultiDurationMs, 0);
         int available = Math.Max(0, end - note.TimeMs - MultiEndPaddingMs);
         if (available <= 0 || hitCount == 1)
         {
-            scheduler.Add(3, note.TimeMs, note.TimeMs, ObjectReason.Multi);
+            keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, Posture.Air, ObjectReason.Multi, 0));
             return;
         }
 
@@ -519,8 +614,12 @@ internal static class ManiaConverter
             int time = note.TimeMs + (int)Math.Round(step * slot, MidpointRounding.AwayFromZero);
             time = Math.Min(time, end - MultiEndPaddingMs);
             int count = Math.Min(chordSize, remaining);
-            foreach (int lane in MultiLanes(count, slot))
-                scheduler.Add(lane, time, time, ObjectReason.Multi);
+            for (int i = 0; i < count; i++)
+            {
+                // multi 姿态启发式：和弦内交替空/地（近似原始 MultiLanes 的混合姿态），具体轨道在阶段2分配。
+                Posture posture = (slot + i) % 2 == 0 ? Posture.Ground : Posture.Air;
+                keys.Add(new KeyDesc(time, time, posture, ObjectReason.Multi, slot));
+            }
             remaining -= count;
         }
     }
@@ -564,53 +663,47 @@ internal static class ManiaConverter
         };
     }
 
-    private static void EnsureMusicCollected(CsvNote note, LaneScheduler scheduler)
+    private static void EnsureMusicCollected(List<KeyDesc> keys, CsvNote note)
     {
         Posture target = note.IsAir ? Posture.Air : Posture.Ground;
-        if (scheduler.IsPostureSatisfied(note.TimeMs, target, MusicWindowMs))
+        if (IsPostureSatisfied(keys, note.TimeMs, target, MusicWindowMs))
             return;
 
-        int lane = scheduler.ChooseLane(note.TimeMs, note.TimeMs, target, boss: false);
-        scheduler.Add(lane, note.TimeMs, note.TimeMs, ObjectReason.MusicCollect);
+        keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, target, ObjectReason.MusicCollect));
     }
 
-    private static void EnsureBlockDodged(CsvNote note, LaneScheduler scheduler)
+    private static void EnsureBlockDodged(List<KeyDesc> keys, CsvNote note)
     {
         Posture unsafePosture = note.IsAir ? Posture.Air : Posture.Ground;
         Posture safePosture = unsafePosture == Posture.Air ? Posture.Ground : Posture.Air;
 
-        if (scheduler.IsPostureSatisfied(note.TimeMs, safePosture, BlockWindowMs))
+        if (IsPostureSatisfied(keys, note.TimeMs, safePosture, BlockWindowMs))
             return;
-        if (!scheduler.IsPostureUnsafe(note.TimeMs, unsafePosture, BlockWindowMs))
+        if (!IsPostureUnsafe(keys, note.TimeMs, unsafePosture, BlockWindowMs))
             return;
 
-        int dodgeTime = note.TimeMs;
-        int lane = scheduler.ChooseLane(dodgeTime, dodgeTime, safePosture, boss: false);
-        scheduler.Add(lane, dodgeTime, dodgeTime, ObjectReason.BlockDodge);
+        keys.Add(new KeyDesc(note.TimeMs, note.TimeMs, safePosture, ObjectReason.BlockDodge));
     }
 
-    // 姿态规划 pass：修复"地面高度齿轮（block type 2, IsAir==false）"在自然落地边界漏掉重新起跳键的问题。
-    // 原理与 RuntimeOsuMapBuilder.PlanGearLandings 一致：在危险窗口 [RiskLowMs, RiskHighMs] 内显式插入
-    // 一次"提前落地"（地面 tap）+ 一次"重新起跳"（空中 tap，放在齿轮同时）。
+    // 齿轮落地修复（阶段1版）：只插入键（姿态），不分配轨道。
     private static void PlanGearLandings(
+        List<KeyDesc> keys,
         IReadOnlyList<CsvNote> notes,
-        IReadOnlyList<CsvNote> multiNotes,
-        List<ManiaObject> objects,
-        LaneScheduler scheduler)
+        IReadOnlyList<CsvNote> multiNotes)
     {
         const int RiskLowMs = 400;
         const int RiskHighMs = 600;
 
         // 地面点击的时刻，用于识别"天地双押"：同一时刻既有空中键又有地面键，结果是地面而非起跳。
-        var groundTapMs = new HashSet<int>(objects
-            .Where(o => !o.IsHold && o.Posture == Posture.Ground)
-            .Select(o => o.StartMs));
+        var groundTapMs = new HashSet<int>(keys
+            .Where(k => !k.IsHold && k.Posture == Posture.Ground)
+            .Select(k => k.StartMs));
 
-        // 起跳事件 = 现有 objects 中所有"空中轨道"的 tap，排除与地面键同刻的（天地双押）。
-        var jumps = objects
-            .Where(o => !o.IsHold && o.Posture == Posture.Air)
-            .Where(o => !groundTapMs.Contains(o.StartMs))
-            .Select(o => o.StartMs)
+        // 起跳事件 = 所有空中 tap，排除与地面键同刻的（天地双押）。
+        var jumps = keys
+            .Where(k => !k.IsHold && k.Posture == Posture.Air)
+            .Where(k => !groundTapMs.Contains(k.StartMs))
+            .Select(k => k.StartMs)
             .OrderBy(t => t)
             .ToList();
         int jumpIndex = 0;
@@ -672,14 +765,27 @@ internal static class ManiaConverter
             if (tj - tg < 1)
                 tg = tj - 1;
 
-            int groundLane = scheduler.ChooseLane(tg, tg, Posture.Ground, boss: false);
-            scheduler.Add(groundLane, tg, tg, ObjectReason.BlockDodge);
-
-            int airLane = scheduler.ChooseLane(tj, tj, Posture.Air, boss: false);
-            scheduler.Add(airLane, tj, tj, ObjectReason.BlockDodge);
+            keys.Add(new KeyDesc(tg, tg, Posture.Ground, ObjectReason.BlockDodge));
+            keys.Add(new KeyDesc(tj, tj, Posture.Air, ObjectReason.BlockDodge));
 
             currentJump = tj;
         }
+    }
+
+    // ===== 阶段2：根据空地键集合分配轨道 =====
+
+    private static List<ManiaObject> AssignLanes(List<KeyDesc> keys, double bpm)
+    {
+        var objects = new List<ManiaObject>();
+        var scheduler = new LaneScheduler(objects, bpm);
+
+        foreach (var key in keys)
+        {
+            int lane = scheduler.ChooseLane(key.StartMs, key.EndMs, key.Posture, boss: false);
+            scheduler.Add(lane, key.StartMs, key.EndMs, key.Reason);
+        }
+
+        return objects;
     }
 
     private static void RemoveExactDuplicates(List<ManiaObject> objects)
