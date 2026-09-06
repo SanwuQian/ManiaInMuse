@@ -5,10 +5,10 @@
         <RootNamespace>AccuracyIndicator</RootNamespace>
         <AssemblyName>ManiaInMuse</AssemblyName>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>2.1.0</Version>
-        <AssemblyVersion>2.1.0.0</AssemblyVersion>
-        <FileVersion>2.1.0.0</FileVersion>
-        <InformationalVersion>2.1.0</InformationalVersion>
+        <Version>2.1.1</Version>
+        <AssemblyVersion>2.1.1.0</AssemblyVersion>
+        <FileVersion>2.1.1.0</FileVersion>
+        <InformationalVersion>2.1.1</InformationalVersion>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
         <LangVersion>latest</LangVersion>
         <ImplicitUsings>enable</ImplicitUsings>
@@ -37,6 +37,6 @@
             <Output TaskParameter="Assemblies" ItemName="MelonLoaderAssemblyIdentity" />
         </GetAssemblyIdentity>
         <Error Condition="'%(MelonLoaderAssemblyIdentity.Version)' != '$(RequiredMelonLoaderVersion)'"
-               Text="ManiaInMuse 2.1.0 must be built against MelonLoader $(RequiredMelonLoaderVersion), but found %(MelonLoaderAssemblyIdentity.Version)." />
+               Text="ManiaInMuse 2.1.1 must be built against MelonLoader $(RequiredMelonLoaderVersion), but found %(MelonLoaderAssemblyIdentity.Version)." />
     </Target>
 </Project>

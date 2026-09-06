@@ -172,4 +172,4 @@ D:\_1 Resourse\_Tool\musedash\mods\ManiaInMuse\debug\ManiaInMuse.dll
 
 ## 当前版本
 
-`2.1.0`
+`2.1.1`
